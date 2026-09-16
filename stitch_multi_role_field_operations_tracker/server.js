@@ -2,6 +2,7 @@ require('dotenv').config();
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { URL } = require('url');
 const { Pool } = require('pg');
 
@@ -13,6 +14,57 @@ const pool = databaseUrl ? new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 }) : null;
 const liveClients = new Set();
+const sessions = new Map();
+
+function parseCookies(request) {
+  return Object.fromEntries((request.headers.cookie || '').split(';').filter(Boolean).map(cookie => {
+    const [key, ...value] = cookie.trim().split('=');
+    return [key, decodeURIComponent(value.join('='))];
+  }));
+}
+
+function getSession(request) {
+  const token = parseCookies(request).kea_session;
+  const session = token && sessions.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    if (token) sessions.delete(token);
+    return null;
+  }
+  return session;
+}
+
+function setSession(response, user) {
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, { ...user, expiresAt: Date.now() + 8 * 60 * 60 * 1000 });
+  response.setHeader('Set-Cookie', `kea_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
+}
+
+function clearSession(request, response) {
+  const token = parseCookies(request).kea_session;
+  if (token) sessions.delete(token);
+  response.setHeader('Set-Cookie', 'kea_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+
+function requiredRoleForPath(pathname) {
+  if (pathname.startsWith('/super_admin_console_mobile_field_command')) return 'super_admin';
+  if (pathname.startsWith('/supervisor_operations_hub_mobile')) return 'supervisor';
+  if (pathname.startsWith('/vsr_field_terminal_mobile_sales_credit')) return 'vsr';
+  if (pathname.startsWith('/merchandiser_hub_mobile_stock_expiry')) return 'merchandiser';
+  if (pathname.startsWith('/api/admin/')) return 'super_admin';
+  if (pathname.startsWith('/api/supervisor/')) return 'supervisor';
+  if (pathname.startsWith('/api/vsr/')) return 'vsr';
+  if (pathname.startsWith('/api/merchandiser/')) return 'merchandiser';
+  if (pathname === '/api/admin/dashboard' || pathname === '/api/admin/audit-log') return 'super_admin';
+  return null;
+}
+
+function hasAccess(user, role) {
+  return user && (user.role === role || (role === 'supervisor' && user.role === 'super_admin'));
+}
 
 function emitLiveSync(type, payload) {
   const message = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
@@ -48,16 +100,24 @@ function readBody(request) {
 }
 
 async function getDashboard() {
-  const [metrics, requisitions, loans, locks, auditLog] = await Promise.all([
+  const [metrics, requisitions, loans, locks, auditLog, liveMetrics] = await Promise.all([
     pool.query('SELECT key, value FROM admin_metrics ORDER BY key'),
     pool.query('SELECT id, name, amount, status FROM requisitions ORDER BY id'),
     pool.query('SELECT name, category, days_past_due AS days, amount FROM loans ORDER BY id'),
     pool.query('SELECT name FROM handheld_locks ORDER BY name'),
-    pool.query('SELECT action, detail, created_at AS at FROM audit_log ORDER BY created_at DESC LIMIT 50')
+    pool.query('SELECT action, detail, created_at AS at FROM audit_log ORDER BY created_at DESC LIMIT 50'),
+    pool.query(`SELECT
+      COUNT(*) FILTER (WHERE role = 'merchandiser')::int AS merchandisers,
+      COUNT(*) FILTER (WHERE role = 'vsr')::int AS vsrs,
+      (SELECT COUNT(DISTINCT store_name)::int FROM store_checkins) AS outlets,
+      (SELECT COUNT(*)::int FROM loans WHERE category <> 'no-loan') AS active_loans,
+      (SELECT COUNT(*)::int FROM field_submissions WHERE status = 'submitted') AS pending_submissions,
+      (SELECT COUNT(*)::int FROM shift_clock_ins WHERE clocked_in_at::date = CURRENT_DATE) AS clocked_in_today
+      FROM staff WHERE active = TRUE`)
   ]);
 
   return {
-    metrics: Object.fromEntries(metrics.rows.map(row => [row.key, row.value])),
+    metrics: { ...Object.fromEntries(metrics.rows.map(row => [row.key, row.value])), ...liveMetrics.rows[0] },
     requisitions: requisitions.rows,
     loans: loans.rows,
     lockedReps: locks.rows.map(row => row.name),
@@ -69,7 +129,11 @@ async function recordAudit(client, action, detail) {
   await client.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', [action, detail]);
 }
 
-function serveStatic(request, response, pathname) {
+function serveStatic(request, response, pathname, user) {
+  const requiredRole = requiredRoleForPath(pathname);
+  if (requiredRole && !hasAccess(user, requiredRole)) {
+    return response.writeHead(302, { Location: `/kea_portal_mobile_shift_clock_in_gateway/code.html?returnTo=${encodeURIComponent(pathname)}` }).end();
+  }
   const requestedPath = pathname === '/' ? 'index.html' : pathname.slice(1);
   const filePath = path.resolve(rootDir, requestedPath);
   if (!filePath.startsWith(rootDir) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
@@ -89,6 +153,7 @@ function serveStatic(request, response, pathname) {
 
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+  const user = getSession(request);
   try {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
@@ -105,6 +170,26 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { status: 'ok' });
     }
 
+    if (url.pathname === '/api/auth/sign-in' && request.method === 'POST') {
+      if (!pool) return sendJson(response, 503, { error: 'Database is not configured' });
+      const body = await readBody(request);
+      if (!body.staffId || !body.passcode || !['super_admin', 'supervisor', 'vsr', 'merchandiser'].includes(body.role)) return sendJson(response, 400, { error: 'Login, passcode, and role are required' });
+      const result = await pool.query(`SELECT u.id, u.login, u.password_salt AS "passwordSalt", u.password_hash AS "passwordHash", u.role, s.staff_code AS "staffCode", s.name, s.hub FROM auth_users u LEFT JOIN staff s ON s.id = u.staff_id WHERE (u.login = $1 OR s.staff_code = $1 OR s.email = $1) AND u.role = $2 AND u.active = TRUE`, [body.staffId, body.role]);
+      const account = result.rows[0];
+      if (!account || hashPassword(body.passcode, account.passwordSalt) !== account.passwordHash) return sendJson(response, 401, { error: 'Credentials or role are not authorized' });
+      const profile = { id: account.id, login: account.login, role: account.role, staffCode: account.staffCode || 'ADMIN', name: account.name || 'Super Admin', hub: account.hub || 'hq' };
+      setSession(response, profile);
+      const requestedReturn = typeof body.returnTo === 'string' && body.returnTo.startsWith('/') && !body.returnTo.startsWith('//') ? body.returnTo : null;
+      return sendJson(response, 200, { user: profile, destination: requestedReturn || (account.role === 'super_admin' ? '/super_admin_console_mobile_field_command/code.html' : `/${account.role === 'vsr' ? 'vsr_field_terminal_mobile_sales_credit' : account.role === 'merchandiser' ? 'merchandiser_hub_mobile_stock_expiry' : 'supervisor_operations_hub_mobile'}/code.html`) });
+    }
+
+    if (url.pathname === '/api/auth/me' && request.method === 'GET') return user ? sendJson(response, 200, { user }) : sendJson(response, 401, { error: 'Sign-in required' });
+    if (url.pathname === '/api/auth/sign-out' && request.method === 'POST') { clearSession(request, response); return sendJson(response, 200, { ok: true }); }
+
+    if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/') && !user) return sendJson(response, 401, { error: 'Sign-in required' });
+    const requiredRole = requiredRoleForPath(url.pathname);
+    if (url.pathname.startsWith('/api/') && requiredRole && !hasAccess(user, requiredRole)) return sendJson(response, 403, { error: 'This role cannot access the requested workspace' });
+
     if (url.pathname === '/api/attendance/today' && request.method === 'GET') {
       const result = await pool.query('SELECT staff_code AS "staffCode", role, hub, clocked_in_at AS at FROM shift_clock_ins WHERE clocked_in_at::date = CURRENT_DATE ORDER BY clocked_in_at DESC');
       return sendJson(response, 200, result.rows);
@@ -115,17 +200,85 @@ const server = http.createServer(async (request, response) => {
       if (!body.staffId || !body.passcode || !['supervisor', 'vsr', 'merchandiser'].includes(body.role)) {
         return sendJson(response, 400, { error: 'Staff ID, passcode, and role are required' });
       }
-      const staffResult = await pool.query('SELECT id, staff_code AS "staffCode", name, role, hub FROM staff WHERE (staff_code = $1 OR email = $1) AND role = $2 AND active = TRUE', [body.staffId, body.role]);
+      const staffResult = await pool.query('SELECT s.id, s.staff_code AS "staffCode", s.name, s.role, s.hub, u.login, u.password_salt AS "passwordSalt", u.password_hash AS "passwordHash", u.id AS "userId" FROM staff s JOIN auth_users u ON u.staff_id = s.id WHERE (s.staff_code = $1 OR s.email = $1 OR u.login = $1) AND s.role = $2 AND s.active = TRUE AND u.active = TRUE', [body.staffId, body.role]);
       const staff = staffResult.rows[0];
-      if (!staff) return sendJson(response, 401, { error: 'Staff credentials or role are not authorized' });
+      if (!staff || hashPassword(body.passcode, staff.passwordSalt) !== staff.passwordHash) return sendJson(response, 401, { error: 'Staff credentials or role are not authorized' });
       const result = await pool.query('INSERT INTO shift_clock_ins (staff_id, staff_code, role, hub, latitude, longitude, accuracy_meters, telemetry_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING clocked_in_at AS at', [staff.id, staff.staffCode, staff.role, body.hub || staff.hub, body.latitude || null, body.longitude || null, body.accuracyMeters || null, body.telemetry || {}]);
       await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['shift_clock_in', `${staff.staffCode} ${staff.role}`]);
-      return sendJson(response, 201, { staff, clockIn: result.rows[0], destination: `/${staff.role === 'vsr' ? 'vsr_field_terminal_mobile_sales_credit' : staff.role === 'merchandiser' ? 'merchandiser_hub_mobile_stock_expiry' : 'supervisor_operations_hub_mobile'}/code.html` });
+      const profile = { id: staff.userId, login: staff.login, role: staff.role, staffCode: staff.staffCode, name: staff.name, hub: staff.hub };
+      setSession(response, profile);
+      emitLiveSync('clock-in', { staffCode: staff.staffCode, name: staff.name, role: staff.role, hub: staff.hub, at: result.rows[0].at });
+      return sendJson(response, 201, { staff: profile, clockIn: result.rows[0], destination: `/${staff.role === 'vsr' ? 'vsr_field_terminal_mobile_sales_credit' : staff.role === 'merchandiser' ? 'merchandiser_hub_mobile_stock_expiry' : 'supervisor_operations_hub_mobile'}/code.html` });
+    }
+
+    if (url.pathname === '/api/admin/users' && request.method === 'GET') {
+      const result = await pool.query('SELECT u.login, u.role, s.staff_code AS "staffCode", s.name, s.email, s.hub, u.created_at AS "createdAt" FROM auth_users u LEFT JOIN staff s ON s.id = u.staff_id ORDER BY u.role, s.name NULLS FIRST');
+      return sendJson(response, 200, result.rows);
+    }
+
+    if (url.pathname === '/api/admin/users' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.name || !body.email || !body.password || !['supervisor', 'vsr', 'merchandiser'].includes(body.role)) return sendJson(response, 400, { error: 'Name, email, role, and password are required' });
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const staffCode = body.staffCode || `${body.role.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-6)}`;
+        const staffResult = await client.query('INSERT INTO staff (staff_code, email, name, role, region, hub, supervisor_name, phone) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, staff_code AS "staffCode", email, name, role, hub, phone', [staffCode, body.email.trim(), body.name.trim(), body.role, body.region || 'Lagos', body.hub || 'lagos-main', body.supervisorName || 'Davis Okon', body.phone || null]);
+        const salt = crypto.randomBytes(16).toString('hex');
+        await client.query('INSERT INTO auth_users (staff_id, login, password_salt, password_hash, role) VALUES ($1, $2, $3, $4, $5)', [staffResult.rows[0].id, body.email.trim(), salt, hashPassword(body.password, salt), body.role]);
+        await client.query('COMMIT');
+        const staff = staffResult.rows[0];
+        await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['user_provisioned', `${staff.staffCode} ${staff.role}`]);
+        emitLiveSync('user-created', { staffCode: staff.staffCode, name: staff.name, role: staff.role });
+        return sendJson(response, 201, { ...staff, login: staff.email, temporaryPassword: body.password });
+      } catch (error) {
+        await client.query('ROLLBACK');
+        if (error.code === '23505') return sendJson(response, 409, { error: 'That email or staff code is already provisioned' });
+        throw error;
+      } finally { client.release(); }
+    }
+
+    if (url.pathname === '/api/submissions' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.filename || !body.dataUrl || !['pod_tracker', 'monthly_report'].includes(body.submissionType)) return sendJson(response, 400, { error: 'Submission type, filename, and file are required' });
+      const match = String(body.dataUrl).match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) return sendJson(response, 400, { error: 'Upload must be a base64 data URL' });
+      const fileData = Buffer.from(match[2], 'base64');
+      if (fileData.length > 10 * 1024 * 1024) return sendJson(response, 413, { error: 'File must be 10MB or smaller' });
+      const result = await pool.query('INSERT INTO field_submissions (staff_code, role, submission_type, filename, content_type, file_data) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, staff_code AS "staffCode", role, submission_type AS "submissionType", filename, status, created_at AS at', [user.staffCode, user.role, body.submissionType, body.filename, match[1], fileData]);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['field_submission', `${user.staffCode} ${body.submissionType} ${body.filename}`]);
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) VALUES ($1, $2, $3)', ['Davis Okon', 'New field submission', `${user.name} sent ${body.submissionType.replace('_', ' ')}`]);
+      emitLiveSync('submission', result.rows[0]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/submissions' && request.method === 'GET') {
+      const query = user.role === 'super_admin' || user.role === 'supervisor' ? 'SELECT id, staff_code AS "staffCode", role, submission_type AS "submissionType", filename, status, reviewer, created_at AS at, reviewed_at AS "reviewedAt" FROM field_submissions ORDER BY created_at DESC LIMIT 50' : 'SELECT id, staff_code AS "staffCode", role, submission_type AS "submissionType", filename, status, reviewer, created_at AS at, reviewed_at AS "reviewedAt" FROM field_submissions WHERE staff_code = $1 ORDER BY created_at DESC LIMIT 50';
+      const result = await pool.query(query, user.role === 'super_admin' || user.role === 'supervisor' ? [] : [user.staffCode]);
+      return sendJson(response, 200, result.rows);
+    }
+
+    const reviewMatch = url.pathname.match(/^\/api\/submissions\/(\d+)\/review$/);
+    if (reviewMatch && request.method === 'POST') {
+      if (!hasAccess(user, 'supervisor')) return sendJson(response, 403, { error: 'Only supervisors can review submissions' });
+      const body = await readBody(request);
+      if (!['reviewed', 'validated', 'rejected'].includes(body.status)) return sendJson(response, 400, { error: 'Invalid review status' });
+      const result = await pool.query('UPDATE field_submissions SET status = $1, reviewer = $2, reviewed_at = NOW() WHERE id = $3 RETURNING id, staff_code AS "staffCode", status, submission_type AS "submissionType"', [body.status, user.name, reviewMatch[1]]);
+      if (!result.rowCount) return sendJson(response, 404, { error: 'Submission not found' });
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) VALUES ($1, $2, $3)', [result.rows[0].staffCode, 'Submission reviewed', `${result.rows[0].submissionType.replace('_', ' ')} was marked ${body.status}`]);
+      emitLiveSync('submission-review', result.rows[0]);
+      return sendJson(response, 200, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/notifications' && request.method === 'GET') {
+      const recipients = user.staffCode ? [user.staffCode, user.name, user.login, 'All Staff'] : [user.name, user.login, 'All Staff'];
+      const result = await pool.query('SELECT id, title, message, created_at AS at, read_at AS "readAt" FROM user_notifications WHERE recipient = ANY($1) ORDER BY created_at DESC LIMIT 30', [recipients]);
+      return sendJson(response, 200, result.rows);
     }
 
     if (url.pathname === '/api/supervisor/dashboard' && request.method === 'GET') {
       const [staff, directives, actions] = await Promise.all([
-        pool.query('SELECT staff_code AS "staffCode", name, role, region, hub FROM staff WHERE active = TRUE ORDER BY role, name'),
+        pool.query('SELECT staff_code AS "staffCode", name, role, region, hub, phone FROM staff WHERE active = TRUE ORDER BY role, name'),
         pool.query('SELECT audience, message, created_at AS at FROM directives ORDER BY created_at DESC LIMIT 25'),
         pool.query('SELECT action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at FROM stock_actions ORDER BY created_at DESC LIMIT 25')
       ]);
@@ -169,7 +322,8 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/api/supervisor/messages' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Message is required' });
-      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', [body.sender || 'Davis Okon', body.recipient || 'All Staff', body.message.trim()]);
+      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', [user.name, body.recipient || 'All Staff', body.message.trim()]);
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) VALUES ($1, $2, $3)', [body.recipient || 'All Staff', 'New supervisor message', result.rows[0].message]);
       emitLiveSync('message', result.rows[0]);
       return sendJson(response, 201, result.rows[0]);
     }
@@ -195,44 +349,47 @@ const server = http.createServer(async (request, response) => {
       const body = await readBody(request);
       if (!body.audience || !body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Audience and message are required' });
       const result = await pool.query('INSERT INTO directives (sender_name, audience, message) VALUES ($1, $2, $3) RETURNING audience, message, created_at AS at', ['Davis Okon', body.audience, body.message.trim()]);
+      const roleFilter = body.audience === 'vsr' ? ['vsr'] : body.audience === 'merch' ? ['merchandiser'] : ['vsr', 'merchandiser'];
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) SELECT staff_code, $1, $2 FROM staff WHERE active = TRUE AND role = ANY($3)', ['Supervisor directive', body.message.trim(), roleFilter]);
+      emitLiveSync('directive', result.rows[0]);
       return sendJson(response, 201, result.rows[0]);
     }
 
     if (url.pathname === '/api/merchandiser/dashboard' && request.method === 'GET') {
       const [audits, actions, checkins, messages] = await Promise.all([
-        pool.query('SELECT store_name AS "storeName", sku, shelf_units AS "shelfUnits", intake_units AS "intakeUnits", batch_number AS "batchNumber", expiry_date AS "expiryDate", audited_at AS at FROM stock_audits WHERE staff_code = $1 ORDER BY audited_at DESC LIMIT 25', ['M0001']),
-        pool.query('SELECT action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at FROM stock_actions WHERE staff_code = $1 ORDER BY created_at DESC LIMIT 25', ['M0001']),
-        pool.query('SELECT store_name AS "storeName", latitude, longitude, radius_match AS "radiusMatch", checked_in_at AS at FROM store_checkins WHERE staff_code = $1 ORDER BY checked_in_at DESC LIMIT 1', ['M0001']),
-        pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at DESC LIMIT 20', ['Kenji Sato'])
+        pool.query('SELECT store_name AS "storeName", sku, shelf_units AS "shelfUnits", intake_units AS "intakeUnits", batch_number AS "batchNumber", expiry_date AS "expiryDate", audited_at AS at FROM stock_audits WHERE staff_code = $1 ORDER BY audited_at DESC LIMIT 25', [user.staffCode]),
+        pool.query('SELECT action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at FROM stock_actions WHERE staff_code = $1 ORDER BY created_at DESC LIMIT 25', [user.staffCode]),
+        pool.query('SELECT store_name AS "storeName", latitude, longitude, radius_match AS "radiusMatch", checked_in_at AS at FROM store_checkins WHERE staff_code = $1 ORDER BY checked_in_at DESC LIMIT 1', [user.staffCode]),
+        pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at DESC LIMIT 20', [user.name])
       ]);
       return sendJson(response, 200, { audits: audits.rows, actions: actions.rows, latestCheckin: checkins.rows[0] || null, messages: messages.rows.reverse() });
     }
 
     if (url.pathname === '/api/merchandiser/messages' && request.method === 'GET') {
-      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at DESC LIMIT 50', ['Kenji Sato']);
+      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at DESC LIMIT 50', [user.name]);
       return sendJson(response, 200, result.rows.reverse());
     }
 
     if (url.pathname === '/api/merchandiser/store-checkins/reping' && request.method === 'POST') {
       const body = await readBody(request);
-      const result = await pool.query('INSERT INTO store_checkins (staff_code, store_name, latitude, longitude, accuracy_meters) VALUES ($1, $2, $3, $4, $5) RETURNING store_name AS "storeName", latitude, longitude, accuracy_meters AS "accuracyMeters", radius_match AS "radiusMatch", checked_in_at AS at', ['M0001', body.storeName || 'Royal Prince Supermarket', body.latitude || null, body.longitude || null, body.accuracyMeters || null]);
+      const result = await pool.query('INSERT INTO store_checkins (staff_code, store_name, latitude, longitude, accuracy_meters) VALUES ($1, $2, $3, $4, $5) RETURNING store_name AS "storeName", latitude, longitude, accuracy_meters AS "accuracyMeters", radius_match AS "radiusMatch", checked_in_at AS at', [user.staffCode, body.storeName || 'Royal Prince Supermarket', body.latitude || null, body.longitude || null, body.accuracyMeters || null]);
       return sendJson(response, 201, result.rows[0]);
     }
 
     if (url.pathname === '/api/merchandiser/stock-audits' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.storeName || !body.sku || !body.batchNumber || !body.expiryDate || Number(body.shelfUnits) < 0 || Number(body.intakeUnits) < 0) return sendJson(response, 400, { error: 'Complete stock audit fields are required' });
-      const result = await pool.query('INSERT INTO stock_audits (staff_code, store_name, sku, shelf_units, intake_units, batch_number, expiry_date, planogram_compliant) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, audited_at AS at', ['M0001', body.storeName, body.sku, Number(body.shelfUnits), Number(body.intakeUnits), body.batchNumber, body.expiryDate, Boolean(body.planogramCompliant)]);
+      const result = await pool.query('INSERT INTO stock_audits (staff_code, store_name, sku, shelf_units, intake_units, batch_number, expiry_date, planogram_compliant) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, audited_at AS at', [user.staffCode, body.storeName, body.sku, Number(body.shelfUnits), Number(body.intakeUnits), body.batchNumber, body.expiryDate, Boolean(body.planogramCompliant)]);
       await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['stock_audit', `${body.storeName} ${body.sku}`]);
-      emitLiveSync('audit', { staffCode: 'M0001', storeName: body.storeName, sku: body.sku, at: new Date().toISOString() });
+      emitLiveSync('audit', { staffCode: user.staffCode, storeName: body.storeName, sku: body.sku, at: new Date().toISOString() });
       return sendJson(response, 201, result.rows[0]);
     }
 
     if (url.pathname === '/api/merchandiser/stock-actions' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.actionType || !body.sku) return sendJson(response, 400, { error: 'Action type and SKU are required' });
-      const result = await pool.query('INSERT INTO stock_actions (staff_code, sku, batch_number, action_type, quantity, source_store, destination_store) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at', ['M0001', body.sku, body.batchNumber || null, body.actionType, body.quantity || null, body.sourceStore || null, body.destinationStore || null]);
-      emitLiveSync('stock-action', { staffCode: 'M0001', sku: body.sku, actionType: body.actionType, at: new Date().toISOString() });
+      const result = await pool.query('INSERT INTO stock_actions (staff_code, sku, batch_number, action_type, quantity, source_store, destination_store) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at', [user.staffCode, body.sku, body.batchNumber || null, body.actionType, body.quantity || null, body.sourceStore || null, body.destinationStore || null]);
+      emitLiveSync('stock-action', { staffCode: user.staffCode, sku: body.sku, actionType: body.actionType, at: new Date().toISOString() });
       return sendJson(response, 201, result.rows[0]);
     }
 
@@ -242,8 +399,8 @@ const server = http.createServer(async (request, response) => {
       if (!match || !body.filename) return sendJson(response, 400, { error: 'An image data URL and filename are required' });
       const fileData = Buffer.from(match[2], 'base64');
       if (fileData.length > 5 * 1024 * 1024) return sendJson(response, 413, { error: 'Image must be 5MB or smaller' });
-      const result = await pool.query('INSERT INTO media_uploads (staff_code, filename, content_type, related_context, file_data) VALUES ($1, $2, $3, $4, $5) RETURNING id, filename, content_type AS "contentType", created_at AS at', ['M0001', body.filename, match[1], body.relatedContext || 'merchandiser-proof', fileData]);
-      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['media_upload', `${body.filename} uploaded by M0001`]);
+      const result = await pool.query('INSERT INTO media_uploads (staff_code, filename, content_type, related_context, file_data) VALUES ($1, $2, $3, $4, $5) RETURNING id, filename, content_type AS "contentType", created_at AS at', [user.staffCode, body.filename, match[1], body.relatedContext || 'merchandiser-proof', fileData]);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['media_upload', `${body.filename} uploaded by ${user.staffCode}`]);
       return sendJson(response, 201, { ...result.rows[0], url: `/api/media/uploads/${result.rows[0].id}` });
     }
 
@@ -266,9 +423,9 @@ const server = http.createServer(async (request, response) => {
 
     if (url.pathname === '/api/vsr/dashboard' && request.method === 'GET') {
       const [status, transactions, messages] = await Promise.all([
-        pool.query('SELECT vsr_id AS "vsrId", locked, certified_at AS "certifiedAt" FROM vsr_loan_status WHERE vsr_id = $1', ['VSR-784']),
+        pool.query('SELECT vsr_id AS "vsrId", locked, certified_at AS "certifiedAt" FROM vsr_loan_status WHERE vsr_id = $1', [user.staffCode]),
         pool.query('SELECT voucher_id AS "voucherId", customer_name AS "customerName", sku, quantity, amount, settlement_mode AS "settlementMode", created_at AS at FROM vsr_transactions ORDER BY created_at DESC LIMIT 25'),
-        pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at ASC LIMIT 50', ['Davis Okon'])
+        pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at ASC LIMIT 50', [user.name])
       ]);
       return sendJson(response, 200, {
         loan: status.rows[0] || { vsrId: 'VSR-784', locked: true, certifiedAt: null },
@@ -278,7 +435,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/vsr/messages' && request.method === 'GET') {
-      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at ASC LIMIT 50', ['Davis Okon']);
+      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at ASC LIMIT 50', [user.name]);
       return sendJson(response, 200, result.rows);
     }
 
@@ -310,7 +467,8 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/api/vsr/messages' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Message is required' });
-      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', ['Sulaimon', 'Davis Okon', body.message.trim()]);
+      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', [user.name, body.recipient || 'Davis Okon', body.message.trim()]);
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) VALUES ($1, $2, $3)', [body.recipient || 'Davis Okon', 'New VSR message', result.rows[0].message]);
       emitLiveSync('message', result.rows[0]);
       return sendJson(response, 201, result.rows[0]);
     }
@@ -359,7 +517,7 @@ const server = http.createServer(async (request, response) => {
       }
     }
 
-    serveStatic(request, response, url.pathname);
+    serveStatic(request, response, url.pathname, user);
   } catch (error) {
     console.error(error);
     sendJson(response, 500, { error: 'Internal server error' });

@@ -20,3 +20,16 @@ npm start
 ```
 
 The database is the source of truth for requisitions, locks, metrics, loans, and audit records. The former JSON store is no longer used.
+
+## Seeded demo credentials
+
+These accounts are created by the migration for testing and should be rotated before production use:
+
+| Role | Login | Password |
+| --- | --- | --- |
+| Super Admin | `admin@kea.com` | `Admin#2026!` |
+| Supervisor | `okon@kea.com` | `Davis#2026!` |
+| VSR | `sulaimon@kea.com` | `Sulaimon#2026!` |
+| Merchandiser | `kenji@kea.com` | `Kenji#2026!` |
+
+Direct dashboard links require a valid session and redirect to the sign-in gateway when opened without one.

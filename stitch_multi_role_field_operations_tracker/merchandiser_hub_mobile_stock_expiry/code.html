@@ -314,7 +314,7 @@ Attach Planogram Proof
 </div>
 <div class="flex items-center gap-1 shrink-0">
 <span class="px-2 py-0.5 rounded bg-primary/10 text-primary font-label-sm text-label-sm">LAGOS</span>
-<button aria-label="Call Toluwanimi" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" type="button">
+<button aria-label="Call Toluwanimi" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" onclick="window.location.href='tel:+2348010000001'" type="button">
 <span class="material-symbols-outlined text-[18px]">phone</span>
 </button>
 </div>
@@ -330,7 +330,7 @@ Attach Planogram Proof
 </div>
 <div class="flex items-center gap-1 shrink-0">
 <span class="px-2 py-0.5 rounded bg-primary/10 text-primary font-label-sm text-label-sm">LAGOS</span>
-<button aria-label="Call Chioma" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" type="button">
+<button aria-label="Call Chioma" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" onclick="window.location.href='tel:+2348010000002'" type="button">
 <span class="material-symbols-outlined text-[18px]">phone</span>
 </button>
 </div>
@@ -346,7 +346,7 @@ Attach Planogram Proof
 </div>
 <div class="flex items-center gap-1 shrink-0">
 <span class="px-2 py-0.5 rounded bg-tertiary/10 text-tertiary font-label-sm text-label-sm">SOUTH WEST</span>
-<button aria-label="Call Sekinat" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" type="button">
+<button aria-label="Call Sekinat" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" onclick="window.location.href='tel:+2348010000003'" type="button">
 <span class="material-symbols-outlined text-[18px]">phone</span>
 </button>
 </div>
@@ -362,7 +362,7 @@ Attach Planogram Proof
 </div>
 <div class="flex items-center gap-1 shrink-0">
 <span class="px-2 py-0.5 rounded bg-secondary/15 text-secondary font-label-sm text-label-sm">NORTH</span>
-<button aria-label="Call Lateefah" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" type="button">
+<button aria-label="Call Lateefah" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" onclick="window.location.href='tel:+2348010000004'" type="button">
 <span class="material-symbols-outlined text-[18px]">phone</span>
 </button>
 </div>
@@ -378,12 +378,19 @@ Attach Planogram Proof
 </div>
 <div class="flex items-center gap-1 shrink-0">
 <span class="px-2 py-0.5 rounded bg-primary/10 text-primary font-label-sm text-label-sm">SOUTH SOUTH</span>
-<button aria-label="Call Christiana" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" type="button">
+<button aria-label="Call Christiana" class="w-9 h-9 flex items-center justify-center rounded-lg bg-surface-container text-on-surface hover:bg-surface-container-high active:scale-95" onclick="window.location.href='tel:+2348010000005'" type="button">
 <span class="material-symbols-outlined text-[18px]">phone</span>
 </button>
 </div>
 </div>
 </div>
+</section>
+<section class="bg-surface-container rounded-xl p-space-md shadow-md flex flex-col gap-space-sm">
+<div class="flex items-center justify-between"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-secondary">upload_file</span><span class="font-headline-sm text-headline-sm text-on-surface">POD Tracker</span></div><span class="font-label-sm text-label-sm text-secondary uppercase">To Davis Okon</span></div>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Upload the completed POD tracker template and send it directly for supervisor review.</p>
+<input accept=".csv,.xlsx,.xls,.pdf,image/*" class="w-full text-on-surface-variant font-body-sm" id="podFile" type="file" required>
+<button class="w-full bg-secondary text-on-secondary rounded-lg p-3 font-semibold flex items-center justify-center gap-2" onclick="submitFieldFile('podFile', 'pod_tracker')" type="button"><span class="material-symbols-outlined text-[18px]">send</span>Send POD to Supervisor</button>
+<p class="font-label-sm text-label-sm text-primary" id="podStatus">No POD submitted this session.</p>
 </section>
 <!-- DIRECT SUPERVISOR WIRE (1-TO-1 SECURE CHAT WITH DAVIS OKON) -->
 <section class="bg-surface-container rounded-xl p-space-md shadow-md flex flex-col gap-space-sm">
@@ -443,6 +450,7 @@ Attach Planogram Proof
     });
     connectMerchLiveFeed();
     loadMerchMessages();
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   });
 
   function connectMerchLiveFeed() {
@@ -451,6 +459,7 @@ Attach Planogram Proof
       stream.addEventListener('message', event => {
         const payload = JSON.parse(event.data);
         if (!payload || !payload.message) return;
+        if ('Notification' in window && Notification.permission === 'granted') new Notification('Supervisor message', { body: payload.message });
         appendMerchMessage(payload.sender || 'System', payload.recipient || 'Kenji Sato', payload.message);
       });
       stream.addEventListener('audit', event => {
@@ -526,6 +535,23 @@ Attach Planogram Proof
       } catch (error) {
         alert(error.message);
       }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function submitFieldFile(inputId, submissionType) {
+    const input = document.getElementById(inputId);
+    const file = input?.files?.[0];
+    if (!file) return alert('Choose the completed POD tracker first.');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const response = await fetch('/api/submissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ submissionType, filename: file.name, dataUrl: reader.result }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Submission failed');
+        document.getElementById('podStatus').textContent = `Sent ${result.filename} to Davis Okon for review.`;
+        input.value = '';
+      } catch (error) { alert(error.message); }
     };
     reader.readAsDataURL(file);
   }

@@ -42,7 +42,11 @@
 <label class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Operational Duty Profile</label>
 <span class="font-label-sm text-label-sm text-primary bg-primary/10 px-2 py-0.5 rounded-full" id="role-tag">ACTIVE ROLE</span>
 </div>
-<div class="grid grid-cols-3 gap-space-xs p-1 rounded-xl bg-surface-container-low">
+<div class="grid grid-cols-4 gap-space-xs p-1 rounded-xl bg-surface-container-low">
+<button class="role-btn py-2.5 px-2 rounded-lg font-label-md text-label-md flex flex-col items-center justify-center gap-1 text-on-surface-variant hover:text-on-surface transition-all" id="role-super-admin" onclick="selectRole('super_admin', this)" type="button">
+<span class="material-symbols-outlined text-[20px]">shield_person</span>
+<span class="truncate w-full text-center">Admin</span>
+</button>
 <button class="role-btn py-2.5 px-2 rounded-lg font-label-md text-label-md flex flex-col items-center justify-center gap-1 text-on-surface bg-surface-container-high shadow-md transition-all" id="role-supervisor" onclick="selectRole('supervisor', this)" type="button">
 <span class="material-symbols-outlined text-[20px] text-primary">manage_accounts</span>
 <span class="truncate w-full text-center">Supervisor</span>
@@ -258,7 +262,10 @@
     btn.innerHTML = '<span class="material-symbols-outlined animate-spin text-[24px]">sync</span><span>TRANSMITTING TELEMETRY...</span>';
     btn.classList.add('opacity-90');
     try {
-      const response = await fetch('/api/auth/clock-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const returnTo = new URLSearchParams(window.location.search).get('returnTo');
+      if (returnTo) payload.returnTo = returnTo;
+      const endpoint = selectedRole === 'super_admin' ? '/api/auth/sign-in' : '/api/auth/clock-in';
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Clock-in failed');
       btn.innerHTML = '<span class="material-symbols-outlined text-[24px]">check_circle</span><span>SHIFT CLOCKED IN</span>';

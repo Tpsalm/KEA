@@ -373,7 +373,9 @@
     });
     createMessageFeed();
     loadSupervisorMessages();
+    loadSupervisorSubmissions();
     connectSupervisorLiveStream();
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     window.setInterval(loadSupervisorMessages, 5000);
   });
 
@@ -406,6 +408,17 @@
         document.body.appendChild(toast);
         setTimeout(() => toast.remove(), 2200);
       });
+      stream.addEventListener('clock-in', event => {
+        const payload = JSON.parse(event.data);
+        showSupervisorToast(`${payload.name} is now live`, 'primary');
+        notifyUser(`${payload.name} clocked in`, `${payload.role.toUpperCase()} is live at ${payload.hub}`);
+      });
+      stream.addEventListener('submission', event => {
+        const payload = JSON.parse(event.data);
+        showSupervisorToast(`New ${payload.submissionType.replace('_', ' ')} received`, 'secondary');
+        notifyUser('New field submission', `${payload.staffCode} sent a ${payload.submissionType.replace('_', ' ')}`);
+        loadSupervisorSubmissions();
+      });
     } catch (error) {
       // Live routing is optional for offline fallback.
     }
@@ -418,8 +431,68 @@
     const feed = document.createElement('div');
     feed.id = 'supervisor-message-feed';
     feed.className = 'bg-surface-container-low rounded-xl p-space-sm flex flex-col gap-space-xs shadow-sm';
-    feed.innerHTML = '<div class="flex items-center justify-between px-space-xs"><span class="font-headline-sm text-headline-sm text-on-surface">Field Message Feed</span><span class="font-label-sm text-label-sm text-primary uppercase">LIVE</span></div><div id="supervisor-message-list" class="flex flex-col gap-space-xs"></div>';
+    feed.innerHTML = '<div class="flex items-center justify-between px-space-xs"><span class="font-headline-sm text-headline-sm text-on-surface">Field Message Feed</span><span class="font-label-sm text-label-sm text-primary uppercase">LIVE</span></div><div id="supervisor-message-list" class="flex flex-col gap-space-xs"></div><div class="flex gap-2 pt-2"><select id="reply-recipient" class="w-28 bg-surface-container-low text-on-surface rounded-lg px-2 text-label-sm"><option value="Sulaimon">Sulaimon</option><option value="Kenji Sato">Kenji Sato</option></select><input id="supervisor-reply" class="flex-1 bg-surface-container-low text-on-surface rounded-lg px-3 py-2 text-body-sm" placeholder="Reply to field staff"><button class="bg-primary text-on-primary rounded-lg px-3" onclick="sendSupervisorReply()" type="button"><span class="material-symbols-outlined text-[18px]">send</span></button></div><div class="pt-3"><div class="font-label-sm text-label-sm text-secondary uppercase mb-2">Submission review queue</div><div id="supervisor-submissions" class="flex flex-col gap-2"></div></div><div class="pt-3"><div class="font-label-sm text-label-sm text-secondary uppercase mb-2">Direct call directory</div><div id="supervisor-contacts" class="flex flex-col gap-2"></div></div>';
     roster.parentElement.appendChild(feed);
+    loadSupervisorContacts();
+  }
+
+  async function loadSupervisorContacts() {
+    const response = await fetch('/api/supervisor/dashboard');
+    if (!response.ok) return;
+    const { staff } = await response.json();
+    const list = document.getElementById('supervisor-contacts');
+    if (!list) return;
+    list.replaceChildren(...staff.filter(item => ['vsr', 'merchandiser'].includes(item.role)).map(item => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between gap-2 bg-surface-container p-2 rounded-lg';
+      row.innerHTML = `<span class="font-body-sm text-body-sm text-on-surface truncate">${item.name} <span class="text-on-surface-variant">${item.role}</span></span><a class="bg-primary text-on-primary rounded p-1.5" aria-label="Call ${item.name}" href="tel:${item.phone || ''}"><span class="material-symbols-outlined text-[18px]">phone</span></a>`;
+      return row;
+    }));
+  }
+
+  function showSupervisorToast(message, tone = 'primary') {
+    const toast = document.createElement('div');
+    toast.className = `fixed top-20 left-1/2 -translate-x-1/2 bg-${tone} text-on-${tone} px-4 py-2 rounded-lg font-label-md text-label-md shadow-xl z-50`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2400);
+  }
+
+  function notifyUser(title, message) {
+    if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body: message });
+  }
+
+  async function sendSupervisorReply() {
+    const input = document.getElementById('supervisor-reply');
+    const recipient = document.getElementById('reply-recipient').value;
+    if (!input.value.trim()) return;
+    const response = await fetch('/api/supervisor/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipient, message: input.value.trim() }) });
+    if (!response.ok) return showSupervisorToast('Reply could not be sent', 'error');
+    input.value = '';
+    await loadSupervisorMessages();
+    showSupervisorToast(`Reply sent to ${recipient}`, 'primary');
+  }
+
+  async function loadSupervisorSubmissions() {
+    const response = await fetch('/api/submissions');
+    if (!response.ok) return;
+    const submissions = await response.json();
+    const list = document.getElementById('supervisor-submissions');
+    if (!list) return;
+    list.replaceChildren(...submissions.slice(0, 8).map(item => {
+      const row = document.createElement('div');
+      row.className = 'bg-surface-container p-2.5 rounded-lg flex items-center justify-between gap-2';
+      row.innerHTML = `<div class="min-w-0"><div class="font-label-md text-label-md text-on-surface truncate">${item.filename}</div><div class="font-label-sm text-label-sm text-on-surface-variant">${item.staffCode} · ${item.submissionType.replace('_', ' ')} · ${item.status}</div></div>${item.status === 'submitted' ? '<button class="bg-primary text-on-primary rounded px-2 py-1 text-label-sm" data-review-id="' + item.id + '">Validate</button>' : '<span class="font-label-sm text-label-sm text-primary uppercase">' + item.status + '</span>'}`;
+      row.querySelector('[data-review-id]')?.addEventListener('click', () => reviewSubmission(item.id));
+      return row;
+    }));
+  }
+
+  async function reviewSubmission(id) {
+    const response = await fetch(`/api/submissions/${id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'validated' }) });
+    if (!response.ok) return showSupervisorToast('Unable to validate submission', 'error');
+    await loadSupervisorSubmissions();
+    showSupervisorToast('Submission validated and sender notified', 'primary');
   }
 
   async function loadSupervisorMessages() {

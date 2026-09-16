@@ -63,7 +63,7 @@
 <span class="material-symbols-outlined text-primary text-[20px]">groups</span>
 </div>
 <div class="mt-2">
-<div class="font-headline-lg text-headline-lg text-on-surface leading-none">149</div>
+<div class="font-headline-lg text-headline-lg text-on-surface leading-none" data-live-metric="merchandisers">149</div>
 <div class="font-body-sm text-body-sm text-on-surface-variant mt-1">Full Roster (5 Regions)</div>
 </div>
 </div>
@@ -74,7 +74,7 @@
 <span class="material-symbols-outlined text-tertiary text-[20px]">storefront</span>
 </div>
 <div class="mt-2">
-<div class="font-headline-lg text-headline-lg text-on-surface leading-none">2,850</div>
+<div class="font-headline-lg text-headline-lg text-on-surface leading-none" data-live-metric="outlets">2,850</div>
 <div class="font-body-sm text-body-sm text-on-surface-variant mt-1">Active retail footprint</div>
 </div>
 </div>
@@ -85,7 +85,7 @@
 <span class="material-symbols-outlined text-primary-container text-[20px]">badge</span>
 </div>
 <div class="mt-2">
-<div class="font-headline-lg text-headline-lg text-on-surface leading-none">46</div>
+<div class="font-headline-lg text-headline-lg text-on-surface leading-none" data-live-metric="vsrs">46</div>
 <div class="font-body-sm text-body-sm text-on-surface-variant mt-1">Reps active (1-46)</div>
 </div>
 </div>
@@ -96,7 +96,7 @@
 <span class="material-symbols-outlined text-secondary text-[20px]">payments</span>
 </div>
 <div class="mt-2">
-<div class="font-headline-lg text-headline-lg text-on-surface leading-none">29</div>
+<div class="font-headline-lg text-headline-lg text-on-surface leading-none" data-live-metric="active_loans">29</div>
 <div class="font-body-sm text-body-sm text-error mt-1 font-semibold">2 overdue &gt;30D</div>
 </div>
 </div>
@@ -108,7 +108,7 @@
 <span class="material-symbols-outlined text-[22px]">pending_actions</span>
 </div>
 <div>
-<div class="font-headline-sm text-headline-sm text-on-surface">6 Pending Grants</div>
+<div class="font-headline-sm text-headline-sm text-on-surface"><span data-live-metric="pending_submissions">6</span> Pending Grants</div>
 <div class="font-body-sm text-body-sm text-on-surface-variant">Disbursements awaiting clearance</div>
 </div>
 </div>
@@ -197,6 +197,10 @@
   async function loadAdminDashboard() {
     try {
       const dashboard = await adminApi('/api/admin/dashboard');
+      document.querySelectorAll('[data-live-metric]').forEach(element => {
+        const value = dashboard.metrics[element.dataset.liveMetric];
+        if (value !== undefined) element.textContent = Number(value).toLocaleString();
+      });
       adminState.pendingApprovals = dashboard.requisitions.filter(item => item.status === 'pending').length;
       const counter = document.querySelector('[data-approval-count]');
       if (counter) counter.textContent = `${adminState.pendingApprovals} Pending Action`;
@@ -232,9 +236,42 @@
         if (!payload || !payload.message) return;
         showAdminToast(`New field message: ${payload.message.slice(0, 24)}...`, 'surface-container-high');
       });
+      stream.addEventListener('clock-in', event => {
+        const payload = JSON.parse(event.data);
+        showAdminToast(`${payload.name} clocked in`, 'primary');
+      });
+      stream.addEventListener('submission', event => {
+        const payload = JSON.parse(event.data);
+        showAdminToast(`New ${payload.submissionType.replace('_', ' ')} received`, 'secondary');
+      });
     } catch (error) {
       // Live stream unavailable; dashboard uses periodic polling as fallback.
     }
+  }
+
+  async function loadProvisionedUsers() {
+    const users = await adminApi('/api/admin/users');
+    const list = document.getElementById('provisioned-users');
+    if (!list) return;
+    list.replaceChildren(...users.map(user => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-container-lowest';
+      row.innerHTML = `<div class="min-w-0"><div class="font-label-md text-label-md text-on-surface">${user.name || 'Super Admin'} <span class="text-primary uppercase">${user.role}</span></div><div class="font-body-sm text-body-sm text-on-surface-variant truncate">${user.login} · ${user.staffCode || 'ADMIN'}</div></div><span class="font-label-sm text-label-sm text-primary">ACTIVE</span>`;
+      return row;
+    }));
+  }
+
+  async function provisionUser(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
+    try {
+      const user = await adminApi('/api/admin/users', { method: 'POST', body: JSON.stringify(data) });
+      document.getElementById('credential-result').textContent = `${user.name}: ${user.login} / ${user.temporaryPassword}`;
+      form.reset();
+      await loadProvisionedUsers();
+      showAdminToast('Credential issued and audit logged', 'primary');
+    } catch (error) { showAdminToast(error.message, 'error'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
@@ -265,10 +302,23 @@
     connectAdminLiveStream();
     updateAdminClock();
     loadAdminDashboard();
+    loadProvisionedUsers().catch(() => showAdminToast('Credential roster unavailable', 'error'));
+    document.getElementById('provision-user-form')?.addEventListener('submit', provisionUser);
     window.setInterval(loadAdminDashboard, 10000);
     window.setInterval(updateAdminClock, 30000);
   });
 </script>
+<section class="flex flex-col gap-3" id="credential-provisioning">
+<div class="flex items-center justify-between px-1"><h2 class="font-headline-sm text-headline-sm text-on-surface">Credential Provisioning</h2><span class="font-label-sm text-label-sm text-primary uppercase">Admin only</span></div>
+<form class="bg-surface-container rounded-xl p-space-md shadow-md flex flex-col gap-3" id="provision-user-form">
+<input class="w-full bg-surface-container-lowest text-on-surface rounded-lg p-3" name="name" placeholder="Full name" required>
+<input class="w-full bg-surface-container-lowest text-on-surface rounded-lg p-3" name="email" type="email" placeholder="Corporate email" required>
+<div class="grid grid-cols-2 gap-2"><select class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="role" required><option value="supervisor">Supervisor</option><option value="vsr">VSR</option><option value="merchandiser">Merchandiser</option></select><input class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="password" minlength="8" placeholder="Temporary password" required></div>
+<button class="w-full bg-primary text-on-primary rounded-lg p-3 font-semibold" type="submit">Create login credentials</button>
+<p class="font-body-sm text-body-sm text-secondary break-words" id="credential-result">New credentials will appear here once issued.</p>
+</form>
+<div class="flex flex-col gap-2" id="provisioned-users"></div>
+</section>
 <!-- 3. Action Center: Endorsement Approvals -->
 <section class="flex flex-col gap-3">
 <div class="flex items-center justify-between px-1">
