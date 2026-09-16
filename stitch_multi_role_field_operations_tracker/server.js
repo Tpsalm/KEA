@@ -66,7 +66,7 @@ async function recordAudit(client, action, detail) {
 }
 
 function serveStatic(request, response, pathname) {
-  const requestedPath = pathname === '/' ? 'kea_portal_mobile_shift_clock_in_gateway/code.html' : pathname.slice(1);
+  const requestedPath = pathname === '/' ? 'super_admin_console_mobile_field_command/code.html' : pathname.slice(1);
   const filePath = path.resolve(rootDir, requestedPath);
   if (!filePath.startsWith(rootDir) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     return sendText(response, 404, 'Not found', 'text/plain; charset=utf-8');
