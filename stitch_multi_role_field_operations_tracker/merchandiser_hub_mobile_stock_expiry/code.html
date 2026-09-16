@@ -441,7 +441,61 @@ Attach Planogram Proof
       if (!['merchandiser', 'portal'].includes(link.dataset.path)) link.classList.add('hidden');
       if (paths[link.dataset.path]) link.href = paths[link.dataset.path];
     });
+    connectMerchLiveFeed();
+    loadMerchMessages();
   });
+
+  function connectMerchLiveFeed() {
+    try {
+      const stream = new EventSource('/api/live');
+      stream.addEventListener('message', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload || !payload.message) return;
+        appendMerchMessage(payload.sender || 'System', payload.recipient || 'Kenji Sato', payload.message);
+      });
+      stream.addEventListener('audit', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload) return;
+        const toast = document.createElement('div');
+        toast.className = 'fixed bottom-24 left-1/2 -translate-x-1/2 bg-primary text-on-primary px-3 py-2 rounded-lg font-label-sm text-label-sm shadow-xl z-50';
+        toast.textContent = `Audit synced: ${payload.sku}`;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2200);
+      });
+    } catch (error) {
+      // Live stream unavailable, but the dashboard remains functional.
+    }
+  }
+
+  function appendMerchMessage(sender, recipient, message) {
+    const chat = document.getElementById('chatMessages');
+    if (!chat) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex flex-col max-w-[85%]';
+    const meta = document.createElement('span');
+    meta.className = 'font-label-sm text-label-sm text-on-surface-variant mb-1';
+    meta.textContent = `${sender} → ${recipient} • Just now`;
+    const bubble = document.createElement('div');
+    bubble.className = 'bg-surface-container-high p-2.5 rounded-xl text-on-surface font-body-sm text-body-sm';
+    bubble.textContent = message;
+    wrapper.append(meta, bubble);
+    chat.appendChild(wrapper);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  async function loadMerchMessages() {
+    try {
+      const response = await fetch('/api/merchandiser/messages');
+      if (!response.ok) return;
+      const messages = await response.json();
+      const chat = document.getElementById('chatMessages');
+      if (!chat) return;
+      chat.replaceChildren();
+      messages.forEach(item => appendMerchMessage(item.sender, item.recipient, item.message));
+    } catch (error) {
+      // Ignore if the live feed is unavailable during startup.
+    }
+  }
 
   async function repingStore() {
     const response = await fetch('/api/merchandiser/store-checkins/reping', {

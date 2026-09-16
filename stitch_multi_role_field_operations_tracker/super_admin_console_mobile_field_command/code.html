@@ -214,6 +214,29 @@
     }
   }
 
+  function connectAdminLiveStream() {
+    try {
+      const stream = new EventSource('/api/live');
+      stream.addEventListener('voucher', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload) return;
+        showAdminToast(`Live dispatch: ${payload.voucherId}`, 'primary');
+      });
+      stream.addEventListener('requisition', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload) return;
+        showAdminToast(`Requisition updated: ${payload.id}`, 'secondary');
+      });
+      stream.addEventListener('message', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload || !payload.message) return;
+        showAdminToast(`New field message: ${payload.message.slice(0, 24)}...`, 'surface-container-high');
+      });
+    } catch (error) {
+      // Live stream unavailable; dashboard uses periodic polling as fallback.
+    }
+  }
+
   window.addEventListener('DOMContentLoaded', () => {
     const paths = {
       'super-admin': './code.html',
@@ -239,6 +262,7 @@
         button.addEventListener('click', () => showAdminToast('Dossier review opened for Abiola Felicia Omowuni', 'secondary'));
       }
     });
+    connectAdminLiveStream();
     updateAdminClock();
     loadAdminDashboard();
     window.setInterval(loadAdminDashboard, 10000);

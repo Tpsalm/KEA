@@ -373,8 +373,43 @@
     });
     createMessageFeed();
     loadSupervisorMessages();
+    connectSupervisorLiveStream();
     window.setInterval(loadSupervisorMessages, 5000);
   });
+
+  function connectSupervisorLiveStream() {
+    try {
+      const stream = new EventSource('/api/live');
+      stream.addEventListener('message', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload || !payload.message) return;
+        const list = document.getElementById('supervisor-message-list');
+        if (!list) return;
+        const row = document.createElement('div');
+        row.className = 'bg-surface-container p-space-sm rounded-lg';
+        const meta = document.createElement('div');
+        meta.className = 'font-label-sm text-label-sm text-primary';
+        meta.textContent = `${payload.sender || 'System'} → ${payload.recipient || 'Davis Okon'}`;
+        const message = document.createElement('div');
+        message.className = 'font-body-sm text-body-sm text-on-surface';
+        message.textContent = payload.message;
+        row.append(meta, message);
+        list.appendChild(row);
+        while (list.children.length > 10) list.removeChild(list.firstChild);
+      });
+      stream.addEventListener('voucher', event => {
+        const payload = JSON.parse(event.data);
+        if (!payload) return;
+        const toast = document.createElement('div');
+        toast.className = 'fixed top-20 left-1/2 -translate-x-1/2 bg-primary text-on-primary px-4 py-2 rounded-lg font-label-md text-label-md flex items-center gap-2 shadow-xl z-50';
+        toast.innerHTML = '<span class="material-symbols-outlined text-[18px]">check_circle</span> Live voucher: ' + payload.voucherId;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2200);
+      });
+    } catch (error) {
+      // Live routing is optional for offline fallback.
+    }
+  }
 
   function createMessageFeed() {
     if (document.getElementById('supervisor-message-feed')) return;

@@ -1,3 +1,4 @@
+require('dotenv').config();
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -16,6 +17,14 @@ const pool = new Pool({
   connectionString: databaseUrl,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
+const liveClients = new Set();
+
+function emitLiveSync(type, payload) {
+  const message = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const client of liveClients) {
+    client.write(message);
+  }
+}
 
 function sendJson(response, status, payload) {
   response.writeHead(status, {
@@ -127,9 +136,46 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { staff: staff.rows, directives: directives.rows, stockActions: actions.rows });
     }
 
+    if (url.pathname === '/api/live' && request.method === 'GET') {
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
+      });
+      response.write('retry: 2000\n\n');
+      response.write(`event: connected\ndata: ${JSON.stringify({ status: 'ok', at: new Date().toISOString() })}\n\n`);
+      liveClients.add(response);
+      request.on('close', () => liveClients.delete(response));
+      return;
+    }
+
+    if (url.pathname === '/api/messages' && request.method === 'GET') {
+      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages ORDER BY created_at DESC LIMIT 50');
+      return sendJson(response, 200, result.rows.reverse());
+    }
+
+    if (url.pathname === '/api/messages' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Message is required' });
+      const sender = body.sender || 'System';
+      const recipient = body.recipient || 'Davis Okon';
+      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', [sender, recipient, body.message.trim()]);
+      emitLiveSync('message', result.rows[0]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
     if (url.pathname === '/api/supervisor/messages' && request.method === 'GET') {
       const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages ORDER BY created_at DESC LIMIT 50');
       return sendJson(response, 200, result.rows.reverse());
+    }
+
+    if (url.pathname === '/api/supervisor/messages' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Message is required' });
+      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', [body.sender || 'Davis Okon', body.recipient || 'All Staff', body.message.trim()]);
+      emitLiveSync('message', result.rows[0]);
+      return sendJson(response, 201, result.rows[0]);
     }
 
     const endorseMatch = url.pathname.match(/^\/api\/supervisor\/requisitions\/([^/]+)\/endorse$/);
@@ -137,6 +183,7 @@ const server = http.createServer(async (request, response) => {
       const result = await pool.query('UPDATE requisitions SET endorsed_by = $1, endorsed_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING id, name, amount, status, endorsed_by AS "endorsedBy"', ['Davis Okon', endorseMatch[1]]);
       if (!result.rowCount) return sendJson(response, 404, { error: 'Requisition not found' });
       await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['supervisor_endorsement', `${result.rows[0].id} by Davis Okon`]);
+      emitLiveSync('requisition', { id: result.rows[0].id, status: result.rows[0].status, endorsedBy: result.rows[0].endorsedBy });
       return sendJson(response, 200, result.rows[0]);
     }
 
@@ -156,12 +203,18 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/merchandiser/dashboard' && request.method === 'GET') {
-      const [audits, actions, checkins] = await Promise.all([
+      const [audits, actions, checkins, messages] = await Promise.all([
         pool.query('SELECT store_name AS "storeName", sku, shelf_units AS "shelfUnits", intake_units AS "intakeUnits", batch_number AS "batchNumber", expiry_date AS "expiryDate", audited_at AS at FROM stock_audits WHERE staff_code = $1 ORDER BY audited_at DESC LIMIT 25', ['M0001']),
         pool.query('SELECT action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at FROM stock_actions WHERE staff_code = $1 ORDER BY created_at DESC LIMIT 25', ['M0001']),
-        pool.query('SELECT store_name AS "storeName", latitude, longitude, radius_match AS "radiusMatch", checked_in_at AS at FROM store_checkins WHERE staff_code = $1 ORDER BY checked_in_at DESC LIMIT 1', ['M0001'])
+        pool.query('SELECT store_name AS "storeName", latitude, longitude, radius_match AS "radiusMatch", checked_in_at AS at FROM store_checkins WHERE staff_code = $1 ORDER BY checked_in_at DESC LIMIT 1', ['M0001']),
+        pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at DESC LIMIT 20', ['Kenji Sato'])
       ]);
-      return sendJson(response, 200, { audits: audits.rows, actions: actions.rows, latestCheckin: checkins.rows[0] || null });
+      return sendJson(response, 200, { audits: audits.rows, actions: actions.rows, latestCheckin: checkins.rows[0] || null, messages: messages.rows.reverse() });
+    }
+
+    if (url.pathname === '/api/merchandiser/messages' && request.method === 'GET') {
+      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at DESC LIMIT 50', ['Kenji Sato']);
+      return sendJson(response, 200, result.rows.reverse());
     }
 
     if (url.pathname === '/api/merchandiser/store-checkins/reping' && request.method === 'POST') {
@@ -175,6 +228,7 @@ const server = http.createServer(async (request, response) => {
       if (!body.storeName || !body.sku || !body.batchNumber || !body.expiryDate || Number(body.shelfUnits) < 0 || Number(body.intakeUnits) < 0) return sendJson(response, 400, { error: 'Complete stock audit fields are required' });
       const result = await pool.query('INSERT INTO stock_audits (staff_code, store_name, sku, shelf_units, intake_units, batch_number, expiry_date, planogram_compliant) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, audited_at AS at', ['M0001', body.storeName, body.sku, Number(body.shelfUnits), Number(body.intakeUnits), body.batchNumber, body.expiryDate, Boolean(body.planogramCompliant)]);
       await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['stock_audit', `${body.storeName} ${body.sku}`]);
+      emitLiveSync('audit', { staffCode: 'M0001', storeName: body.storeName, sku: body.sku, at: new Date().toISOString() });
       return sendJson(response, 201, result.rows[0]);
     }
 
@@ -182,6 +236,7 @@ const server = http.createServer(async (request, response) => {
       const body = await readBody(request);
       if (!body.actionType || !body.sku) return sendJson(response, 400, { error: 'Action type and SKU are required' });
       const result = await pool.query('INSERT INTO stock_actions (staff_code, sku, batch_number, action_type, quantity, source_store, destination_store) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at', ['M0001', body.sku, body.batchNumber || null, body.actionType, body.quantity || null, body.sourceStore || null, body.destinationStore || null]);
+      emitLiveSync('stock-action', { staffCode: 'M0001', sku: body.sku, actionType: body.actionType, at: new Date().toISOString() });
       return sendJson(response, 201, result.rows[0]);
     }
 
@@ -226,6 +281,11 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
+    if (url.pathname === '/api/vsr/messages' && request.method === 'GET') {
+      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at ASC LIMIT 50', ['Davis Okon']);
+      return sendJson(response, 200, result.rows);
+    }
+
     if (url.pathname === '/api/vsr/transactions' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.customerName || !body.sku || !Number.isInteger(Number(body.quantity)) || Number(body.quantity) <= 0 || !body.amount || !['bank', 'credit'].includes(body.settlementMode)) {
@@ -240,19 +300,22 @@ const server = http.createServer(async (request, response) => {
         [voucherId, body.customerName, body.sku, Number(body.quantity), body.amount, body.settlementMode, body.customerContact || null]
       );
       await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['vsr_transaction', `${voucherId} ${body.customerName} ${body.settlementMode}`]);
+      emitLiveSync('voucher', { voucherId, customerName: body.customerName, settlementMode: body.settlementMode, at: new Date().toISOString() });
       return sendJson(response, 201, result.rows[0]);
     }
 
     if (url.pathname === '/api/vsr/settlement/certify' && request.method === 'POST') {
       const result = await pool.query('UPDATE vsr_loan_status SET locked = FALSE, certified_at = NOW() WHERE vsr_id = $1 RETURNING vsr_id AS "vsrId", locked, certified_at AS "certifiedAt"', ['VSR-784']);
       await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['vsr_lock_certified', 'VSR-784 certified by Joint Accountant Desk']);
+      emitLiveSync('vsr-lock', { vsrId: 'VSR-784', locked: false, at: new Date().toISOString() });
       return sendJson(response, 200, result.rows[0]);
     }
 
     if (url.pathname === '/api/vsr/messages' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Message is required' });
-      const result = await pool.query('INSERT INTO supervisor_messages (message) VALUES ($1) RETURNING sender, recipient, message, created_at AS at', [body.message.trim()]);
+      const result = await pool.query('INSERT INTO supervisor_messages (sender, recipient, message) VALUES ($1, $2, $3) RETURNING sender, recipient, message, created_at AS at', ['Sulaimon', 'Davis Okon', body.message.trim()]);
+      emitLiveSync('message', result.rows[0]);
       return sendJson(response, 201, result.rows[0]);
     }
 
