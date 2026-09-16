@@ -127,6 +127,11 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { staff: staff.rows, directives: directives.rows, stockActions: actions.rows });
     }
 
+    if (url.pathname === '/api/supervisor/messages' && request.method === 'GET') {
+      const result = await pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages ORDER BY created_at DESC LIMIT 50');
+      return sendJson(response, 200, result.rows.reverse());
+    }
+
     const endorseMatch = url.pathname.match(/^\/api\/supervisor\/requisitions\/([^/]+)\/endorse$/);
     if (endorseMatch && request.method === 'POST') {
       const result = await pool.query('UPDATE requisitions SET endorsed_by = $1, endorsed_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING id, name, amount, status, endorsed_by AS "endorsedBy"', ['Davis Okon', endorseMatch[1]]);
@@ -178,6 +183,25 @@ const server = http.createServer(async (request, response) => {
       if (!body.actionType || !body.sku) return sendJson(response, 400, { error: 'Action type and SKU are required' });
       const result = await pool.query('INSERT INTO stock_actions (staff_code, sku, batch_number, action_type, quantity, source_store, destination_store) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at', ['M0001', body.sku, body.batchNumber || null, body.actionType, body.quantity || null, body.sourceStore || null, body.destinationStore || null]);
       return sendJson(response, 201, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/media/uploads' && request.method === 'POST') {
+      const body = await readBody(request);
+      const match = String(body.dataUrl || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match || !body.filename) return sendJson(response, 400, { error: 'An image data URL and filename are required' });
+      const fileData = Buffer.from(match[2], 'base64');
+      if (fileData.length > 5 * 1024 * 1024) return sendJson(response, 413, { error: 'Image must be 5MB or smaller' });
+      const result = await pool.query('INSERT INTO media_uploads (staff_code, filename, content_type, related_context, file_data) VALUES ($1, $2, $3, $4, $5) RETURNING id, filename, content_type AS "contentType", created_at AS at', ['M0001', body.filename, match[1], body.relatedContext || 'merchandiser-proof', fileData]);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['media_upload', `${body.filename} uploaded by M0001`]);
+      return sendJson(response, 201, { ...result.rows[0], url: `/api/media/uploads/${result.rows[0].id}` });
+    }
+
+    const mediaMatch = url.pathname.match(/^\/api\/media\/uploads\/(\d+)$/);
+    if (mediaMatch && request.method === 'GET') {
+      const result = await pool.query('SELECT content_type AS "contentType", file_data FROM media_uploads WHERE id = $1', [mediaMatch[1]]);
+      if (!result.rowCount) return sendText(response, 404, 'Not found', 'text/plain; charset=utf-8');
+      response.writeHead(200, { 'Content-Type': result.rows[0].contentType, 'Cache-Control': 'public, max-age=31536000, immutable' });
+      return response.end(result.rows[0].file_data);
     }
 
     if (url.pathname === '/api/admin/dashboard' && request.method === 'GET') {

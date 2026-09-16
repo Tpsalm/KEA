@@ -371,7 +371,45 @@
     document.querySelectorAll('a[data-path]').forEach(link => {
       if (paths[link.dataset.path]) link.href = paths[link.dataset.path];
     });
+    createMessageFeed();
+    loadSupervisorMessages();
+    window.setInterval(loadSupervisorMessages, 5000);
   });
+
+  function createMessageFeed() {
+    if (document.getElementById('supervisor-message-feed')) return;
+    const roster = document.getElementById('staff-roster');
+    if (!roster) return;
+    const feed = document.createElement('div');
+    feed.id = 'supervisor-message-feed';
+    feed.className = 'bg-surface-container-low rounded-xl p-space-sm flex flex-col gap-space-xs shadow-sm';
+    feed.innerHTML = '<div class="flex items-center justify-between px-space-xs"><span class="font-headline-sm text-headline-sm text-on-surface">Field Message Feed</span><span class="font-label-sm text-label-sm text-primary uppercase">LIVE</span></div><div id="supervisor-message-list" class="flex flex-col gap-space-xs"></div>';
+    roster.parentElement.appendChild(feed);
+  }
+
+  async function loadSupervisorMessages() {
+    try {
+      const response = await fetch('/api/supervisor/messages');
+      if (!response.ok) return;
+      const messages = await response.json();
+      const list = document.getElementById('supervisor-message-list');
+      if (!list) return;
+      list.replaceChildren(...messages.slice(-10).map(item => {
+        const row = document.createElement('div');
+        row.className = 'bg-surface-container p-space-sm rounded-lg';
+        const meta = document.createElement('div');
+        meta.className = 'font-label-sm text-label-sm text-primary';
+        meta.textContent = `${item.sender} → ${item.recipient}`;
+        const message = document.createElement('div');
+        message.className = 'font-body-sm text-body-sm text-on-surface';
+        message.textContent = item.message;
+        row.append(meta, message);
+        return row;
+      }));
+    } catch (error) {
+      // Keep the command surface usable when the API is temporarily unavailable.
+    }
+  }
 
   async function endorseReq(cardId) {
     const card = document.getElementById(cardId);

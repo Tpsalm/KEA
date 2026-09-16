@@ -126,6 +126,16 @@ CREATE TABLE IF NOT EXISTS directives (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS media_uploads (
+  id BIGSERIAL PRIMARY KEY,
+  staff_code TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  related_context TEXT,
+  file_data BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS endorsed_by TEXT;
 ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS endorsed_at TIMESTAMPTZ;
 

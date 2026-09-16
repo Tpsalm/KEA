@@ -192,6 +192,11 @@
 </div>
 <input checked="" class="w-5 h-5 rounded accent-primary-container cursor-pointer" id="planogramInput" type="checkbox"/>
 </div>
+<input accept="image/*" capture="environment" class="hidden" id="proofImageInput" onchange="uploadProofImage(event)" type="file"/>
+<button class="w-full h-11 rounded-lg bg-surface-container-low text-on-surface font-label-sm text-label-sm flex items-center justify-center gap-2" onclick="document.getElementById('proofImageInput').click()" type="button">
+<span class="material-symbols-outlined text-[18px]">photo_camera</span>
+Attach Planogram Proof
+</button>
 <!-- Commit Action Button -->
 <button class="w-full h-12 rounded-xl bg-primary text-on-primary font-headline-sm text-headline-sm flex items-center justify-center gap-2 shadow-md hover:opacity-90 active:scale-[0.98] transition-all mt-1" id="commitBtn" type="submit">
 <span class="material-symbols-outlined text-[20px]">cloud_upload</span>
@@ -446,6 +451,29 @@
     });
     if (!response.ok) return alert('Unable to persist GPS store check-in.');
     alert('GPS store check-in synchronized.');
+  }
+
+  function uploadProofImage(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const response = await fetch('/api/media/uploads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: file.name, dataUrl: reader.result, relatedContext: 'planogram-proof' })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Proof upload failed');
+        const toast = document.getElementById('syncFeedback');
+        toast.classList.remove('hidden');
+        toast.querySelector('span').lastChild.textContent = ' Planogram proof uploaded and persisted';
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+    reader.readAsDataURL(file);
   }
 
   async function commitAudit() {
