@@ -9,8 +9,9 @@ services:
     name: kea-operations-console
     runtime: node
     plan: free
-    buildCommand: npm install && npm run db:migrate
-    startCommand: npm start
+    rootDir: stitch_multi_role_field_operations_tracker
+    buildCommand: "npm install"
+    startCommand: "node server.js"
     envVars:
       - key: NODE_ENV
         value: production
