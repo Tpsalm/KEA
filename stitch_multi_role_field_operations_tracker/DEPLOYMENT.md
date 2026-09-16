@@ -5,7 +5,7 @@
 1. Push this project to a Git repository.
 2. In Render, choose **New > Blueprint** and select the repository.
 3. Render reads `render.yaml`, provisions PostgreSQL, runs `npm install && npm run db:migrate`, and starts `npm start`.
-4. Open the generated web service URL and navigate to `/super_admin_console_mobile_field_command/code.html`.
+4. Open the generated web service URL. The root URL provides the web directory for all five role workspaces.
 
 The service requires `DATABASE_URL`. Do not commit `.env` or database credentials.
 

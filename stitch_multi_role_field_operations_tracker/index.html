@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KEA Operations Console</title>
+  <meta name="description" content="KEA Corporate Hospitality Services field operations workspace.">
+  <style>
+    :root { color-scheme: dark; --ink: #e9f0ff; --muted: #9aa8c5; --line: #2d3b58; --panel: rgba(20, 31, 53, .82); --lime: #a6e358; --bg: #081124; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; color: var(--ink); font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif; background: radial-gradient(circle at 85% 10%, #1b3e50 0, transparent 32%), radial-gradient(circle at 10% 90%, #29351d 0, transparent 30%), var(--bg); }
+    main { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 56px 0 72px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 32px; margin-bottom: 56px; }
+    .eyebrow { margin: 0 0 14px; color: var(--lime); font: 700 12px/1.2 "JetBrains Mono", monospace; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { max-width: 760px; margin: 0; font: 700 clamp(42px, 7vw, 88px)/.96 "Space Grotesk", "Segoe UI", sans-serif; letter-spacing: -.04em; }
+    .intro { max-width: 440px; margin: 18px 0 0; color: var(--muted); font-size: 16px; line-height: 1.7; }
+    .status { display: inline-flex; align-items: center; gap: 9px; padding: 10px 13px; border: 1px solid rgba(166,227,88,.35); color: var(--lime); font: 700 11px "JetBrains Mono", monospace; letter-spacing: .08em; white-space: nowrap; }
+    .status::before { width: 7px; height: 7px; border-radius: 50%; background: var(--lime); content: ""; box-shadow: 0 0 16px var(--lime); }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .role { grid-column: span 4; min-height: 242px; display: flex; flex-direction: column; justify-content: space-between; padding: 24px; color: inherit; text-decoration: none; border: 1px solid var(--line); background: var(--panel); transition: transform .2s ease, border-color .2s ease, background .2s ease; }
+    .role:nth-child(-n+2) { grid-column: span 6; min-height: 270px; }
+    .role:hover, .role:focus-visible { transform: translateY(-5px); border-color: var(--accent); background: rgba(35, 49, 78, .94); outline: none; }
+    .number { color: var(--accent); font: 700 12px "JetBrains Mono", monospace; letter-spacing: .12em; }
+    .icon { margin: 26px 0 12px; color: var(--accent); font-size: 29px; }
+    h2 { margin: 0; font: 600 25px/1.1 "Space Grotesk", "Segoe UI", sans-serif; }
+    .role p { margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .open { align-self: flex-end; color: var(--accent); font: 700 11px "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
+    footer { display: flex; justify-content: space-between; gap: 24px; margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font: 11px "JetBrains Mono", monospace; }
+    @media (max-width: 720px) { main { width: min(100% - 32px, 520px); padding: 32px 0 48px; } header { display: block; margin-bottom: 34px; } .status { margin-top: 25px; } .role, .role:nth-child(-n+2) { grid-column: 1 / -1; min-height: 210px; } footer { display: block; line-height: 1.8; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">KEA / Field Operations</p>
+        <h1>Choose your command surface.</h1>
+        <p class="intro">A single browser entrypoint for every team in the field. Open a role workspace below to continue.</p>
+      </div>
+      <div class="status">SYSTEM DIRECTORY ONLINE</div>
+    </header>
+    <section class="grid" aria-label="Role workspaces">
+      <a class="role" style="--accent: #a6e358" href="super_admin_console_mobile_field_command/code.html"><div><div class="number">01 / CONTROL</div><div class="icon">◆</div><h2>Super Admin</h2><p>Master command for requisitions, loans, audit trails, and operational controls.</p></div><div class="open">Open workspace →</div></a>
+      <a class="role" style="--accent: #ffb693" href="supervisor_operations_hub_mobile/code.html"><div><div class="number">02 / OVERSIGHT</div><div class="icon">◈</div><h2>Supervisor Hub</h2><p>Coordinate staff activity, escalation approvals, directives, and live deployment.</p></div><div class="open">Open workspace →</div></a>
+      <a class="role" style="--accent: #99d9ff" href="kea_portal_mobile_shift_clock_in_gateway/code.html"><div><div class="number">03 / ACCESS</div><div class="icon">＋</div><h2>Shift Gateway</h2><p>Authenticate staff, capture shift presence, and route each role to its terminal.</p></div><div class="open">Open workspace →</div></a>
+      <a class="role" style="--accent: #a6e358" href="vsr_field_terminal_mobile_sales_credit/code.html"><div><div class="number">04 / SALES</div><div class="icon">◇</div><h2>VSR Terminal</h2><p>Record field sales, manage credit settlement, and certify loan readiness.</p></div><div class="open">Open workspace →</div></a>
+      <a class="role" style="--accent: #ffb693" href="merchandiser_hub_mobile_stock_expiry/code.html"><div><div class="number">05 / STOCK</div><div class="icon">▦</div><h2>Merchandiser Hub</h2><p>Audit shelf stock, flag expiry risk, check in at stores, and upload proof.</p></div><div class="open">Open workspace →</div></a>
+    </section>
+    <footer><span>KEA CORPORATE HOSPITALITY SERVICES</span><span>WEB CONSOLE / v1.0</span></footer>
+  </main>
+</body>
+</html>

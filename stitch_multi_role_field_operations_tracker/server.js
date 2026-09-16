@@ -8,15 +8,10 @@ const { Pool } = require('pg');
 const rootDir = __dirname;
 const port = Number(process.env.PORT || 4173);
 const databaseUrl = process.env.DATABASE_URL;
-
-if (!databaseUrl) {
-  throw new Error('DATABASE_URL is required. Configure PostgreSQL before starting the server.');
-}
-
-const pool = new Pool({
+const pool = databaseUrl ? new Pool({
   connectionString: databaseUrl,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+}) : null;
 const liveClients = new Set();
 
 function emitLiveSync(type, payload) {
@@ -75,7 +70,7 @@ async function recordAudit(client, action, detail) {
 }
 
 function serveStatic(request, response, pathname) {
-  const requestedPath = pathname === '/' ? 'super_admin_console_mobile_field_command/code.html' : pathname.slice(1);
+  const requestedPath = pathname === '/' ? 'index.html' : pathname.slice(1);
   const filePath = path.resolve(rootDir, requestedPath);
   if (!filePath.startsWith(rootDir) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     return sendText(response, 404, 'Not found', 'text/plain; charset=utf-8');
@@ -105,6 +100,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === '/health' && request.method === 'GET') {
+      if (!pool) return sendJson(response, 503, { status: 'degraded', database: 'not configured' });
       await pool.query('SELECT 1');
       return sendJson(response, 200, { status: 'ok' });
     }
