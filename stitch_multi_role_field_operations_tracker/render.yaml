@@ -10,7 +10,7 @@ services:
     runtime: node
     plan: free
     rootDir: stitch_multi_role_field_operations_tracker
-    buildCommand: "npm install"
+    buildCommand: "npm install && node scripts/migrate.js"
     startCommand: "node server.js"
     envVars:
       - key: NODE_ENV
