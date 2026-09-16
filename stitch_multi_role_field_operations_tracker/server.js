@@ -109,6 +109,49 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, result.rows);
     }
 
+    if (url.pathname === '/api/vsr/dashboard' && request.method === 'GET') {
+      const [status, transactions, messages] = await Promise.all([
+        pool.query('SELECT vsr_id AS "vsrId", locked, certified_at AS "certifiedAt" FROM vsr_loan_status WHERE vsr_id = $1', ['VSR-784']),
+        pool.query('SELECT voucher_id AS "voucherId", customer_name AS "customerName", sku, quantity, amount, settlement_mode AS "settlementMode", created_at AS at FROM vsr_transactions ORDER BY created_at DESC LIMIT 25'),
+        pool.query('SELECT sender, recipient, message, created_at AS at FROM supervisor_messages WHERE recipient = $1 OR sender = $1 ORDER BY created_at ASC LIMIT 50', ['Davis Okon'])
+      ]);
+      return sendJson(response, 200, {
+        loan: status.rows[0] || { vsrId: 'VSR-784', locked: true, certifiedAt: null },
+        transactions: transactions.rows,
+        messages: messages.rows
+      });
+    }
+
+    if (url.pathname === '/api/vsr/transactions' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.customerName || !body.sku || !Number.isInteger(Number(body.quantity)) || Number(body.quantity) <= 0 || !body.amount || !['bank', 'credit'].includes(body.settlementMode)) {
+        return sendJson(response, 400, { error: 'Customer, SKU, positive quantity, amount, and settlement mode are required' });
+      }
+      if (body.settlementMode === 'credit' && !body.customerContact) {
+        return sendJson(response, 400, { error: 'Customer contact is required for credit sales' });
+      }
+      const voucherId = `TX-${Date.now()}`;
+      const result = await pool.query(
+        'INSERT INTO vsr_transactions (voucher_id, customer_name, sku, quantity, amount, settlement_mode, customer_contact) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING voucher_id AS "voucherId", created_at AS at',
+        [voucherId, body.customerName, body.sku, Number(body.quantity), body.amount, body.settlementMode, body.customerContact || null]
+      );
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['vsr_transaction', `${voucherId} ${body.customerName} ${body.settlementMode}`]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/vsr/settlement/certify' && request.method === 'POST') {
+      const result = await pool.query('UPDATE vsr_loan_status SET locked = FALSE, certified_at = NOW() WHERE vsr_id = $1 RETURNING vsr_id AS "vsrId", locked, certified_at AS "certifiedAt"', ['VSR-784']);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['vsr_lock_certified', 'VSR-784 certified by Joint Accountant Desk']);
+      return sendJson(response, 200, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/vsr/messages' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Message is required' });
+      const result = await pool.query('INSERT INTO supervisor_messages (message) VALUES ($1) RETURNING sender, recipient, message, created_at AS at', [body.message.trim()]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
     const requisitionMatch = url.pathname.match(/^\/api\/admin\/requisitions\/([^/]+)\/decision$/);
     if (requisitionMatch && request.method === 'POST') {
       const body = await readBody(request);

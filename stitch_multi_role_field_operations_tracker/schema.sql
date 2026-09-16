@@ -31,6 +31,36 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS vsr_transactions (
+  id BIGSERIAL PRIMARY KEY,
+  voucher_id TEXT UNIQUE NOT NULL,
+  customer_name TEXT NOT NULL,
+  sku TEXT NOT NULL,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  amount TEXT NOT NULL,
+  settlement_mode TEXT NOT NULL CHECK (settlement_mode IN ('bank', 'credit')),
+  customer_contact TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS vsr_loan_status (
+  vsr_id TEXT PRIMARY KEY,
+  locked BOOLEAN NOT NULL DEFAULT TRUE,
+  certified_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS supervisor_messages (
+  id BIGSERIAL PRIMARY KEY,
+  sender TEXT NOT NULL DEFAULT 'Sulaimon',
+  recipient TEXT NOT NULL DEFAULT 'Davis Okon',
+  message TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO vsr_loan_status (vsr_id, locked)
+VALUES ('VSR-784', TRUE)
+ON CONFLICT (vsr_id) DO NOTHING;
+
 INSERT INTO admin_metrics (key, value) VALUES
   ('merchandisers', 149),
   ('outlets', 2850),
