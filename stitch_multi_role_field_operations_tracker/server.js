@@ -63,7 +63,7 @@ function requiredRoleForPath(pathname) {
 }
 
 function hasAccess(user, role) {
-  return user && (user.role === role || (role === 'supervisor' && user.role === 'super_admin'));
+  return user && user.role === role;
 }
 
 function emitLiveSync(type, payload) {
@@ -100,24 +100,16 @@ function readBody(request) {
 }
 
 async function getDashboard() {
-  const [metrics, requisitions, loans, locks, auditLog, liveMetrics] = await Promise.all([
+  const [metrics, requisitions, loans, locks, auditLog] = await Promise.all([
     pool.query('SELECT key, value FROM admin_metrics ORDER BY key'),
     pool.query('SELECT id, name, amount, status FROM requisitions ORDER BY id'),
     pool.query('SELECT name, category, days_past_due AS days, amount FROM loans ORDER BY id'),
     pool.query('SELECT name FROM handheld_locks ORDER BY name'),
-    pool.query('SELECT action, detail, created_at AS at FROM audit_log ORDER BY created_at DESC LIMIT 50'),
-    pool.query(`SELECT
-      COUNT(*) FILTER (WHERE role = 'merchandiser')::int AS merchandisers,
-      COUNT(*) FILTER (WHERE role = 'vsr')::int AS vsrs,
-      (SELECT COUNT(DISTINCT store_name)::int FROM store_checkins) AS outlets,
-      (SELECT COUNT(*)::int FROM loans WHERE category <> 'no-loan') AS active_loans,
-      (SELECT COUNT(*)::int FROM field_submissions WHERE status = 'submitted') AS pending_submissions,
-      (SELECT COUNT(*)::int FROM shift_clock_ins WHERE clocked_in_at::date = CURRENT_DATE) AS clocked_in_today
-      FROM staff WHERE active = TRUE`)
+    pool.query('SELECT action, detail, created_at AS at FROM audit_log ORDER BY created_at DESC LIMIT 50')
   ]);
 
   return {
-    metrics: { ...Object.fromEntries(metrics.rows.map(row => [row.key, row.value])), ...liveMetrics.rows[0] },
+    metrics: Object.fromEntries(metrics.rows.map(row => [row.key, row.value])),
     requisitions: requisitions.rows,
     loans: loans.rows,
     lockedReps: locks.rows.map(row => row.name),
@@ -132,6 +124,7 @@ async function recordAudit(client, action, detail) {
 function serveStatic(request, response, pathname, user) {
   const requiredRole = requiredRoleForPath(pathname);
   if (requiredRole && !hasAccess(user, requiredRole)) {
+    if (user) return sendText(response, 403, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Access Not Allowed</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#081124;color:#e9f0ff;font:16px system-ui,sans-serif;text-align:center}main{max-width:420px;padding:32px}h1{color:#ffb693}a{color:#a6e358}</style></head><body><main><p>KEA OPERATIONS SECURITY</p><h1>Access not allowed</h1><p>Your ${user.role.replace('_', ' ')} account can only open its assigned workspace.</p><a href="/">Return to web directory</a></main></body></html>`, 'text/html; charset=utf-8');
     return response.writeHead(302, { Location: `/kea_portal_mobile_shift_clock_in_gateway/code.html?returnTo=${encodeURIComponent(pathname)}` }).end();
   }
   const requestedPath = pathname === '/' ? 'index.html' : pathname.slice(1);
