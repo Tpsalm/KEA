@@ -1,0 +1,17 @@
+{
+  "name": "kea-corporate-hospitality-operations",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KEA Corporate Hospitality Services operations console",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "db:migrate": "node scripts/migrate.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

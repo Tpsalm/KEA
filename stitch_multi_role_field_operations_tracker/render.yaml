@@ -1,0 +1,20 @@
+databases:
+  - name: kea-operations-db
+    databaseName: kea_operations
+    user: kea_operations
+    plan: free
+
+services:
+  - type: web
+    name: kea-operations-console
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run db:migrate
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kea-operations-db
+          property: connectionString
