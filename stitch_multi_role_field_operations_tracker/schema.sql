@@ -57,6 +57,84 @@ CREATE TABLE IF NOT EXISTS supervisor_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS staff (
+  id BIGSERIAL PRIMARY KEY,
+  staff_code TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('supervisor', 'vsr', 'merchandiser')),
+  region TEXT NOT NULL,
+  hub TEXT NOT NULL,
+  supervisor_name TEXT,
+  active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS shift_clock_ins (
+  id BIGSERIAL PRIMARY KEY,
+  staff_id BIGINT REFERENCES staff(id),
+  staff_code TEXT NOT NULL,
+  role TEXT NOT NULL,
+  hub TEXT NOT NULL,
+  clocked_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  latitude NUMERIC,
+  longitude NUMERIC,
+  accuracy_meters NUMERIC,
+  telemetry_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS store_checkins (
+  id BIGSERIAL PRIMARY KEY,
+  staff_code TEXT NOT NULL,
+  store_name TEXT NOT NULL,
+  latitude NUMERIC,
+  longitude NUMERIC,
+  accuracy_meters NUMERIC,
+  radius_match BOOLEAN NOT NULL DEFAULT TRUE,
+  checked_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS stock_audits (
+  id BIGSERIAL PRIMARY KEY,
+  staff_code TEXT NOT NULL,
+  store_name TEXT NOT NULL,
+  sku TEXT NOT NULL,
+  shelf_units INTEGER NOT NULL,
+  intake_units INTEGER NOT NULL,
+  batch_number TEXT NOT NULL,
+  expiry_date DATE NOT NULL,
+  planogram_compliant BOOLEAN NOT NULL DEFAULT FALSE,
+  audited_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS stock_actions (
+  id BIGSERIAL PRIMARY KEY,
+  staff_code TEXT NOT NULL,
+  sku TEXT NOT NULL,
+  batch_number TEXT,
+  action_type TEXT NOT NULL,
+  quantity INTEGER,
+  source_store TEXT,
+  destination_store TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS directives (
+  id BIGSERIAL PRIMARY KEY,
+  sender_name TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS endorsed_by TEXT;
+ALTER TABLE requisitions ADD COLUMN IF NOT EXISTS endorsed_at TIMESTAMPTZ;
+
+INSERT INTO staff (staff_code, email, name, role, region, hub, supervisor_name) VALUES
+  ('SUP-0491', 'okon@kea.com', 'Davis Okon', 'supervisor', 'Lagos', 'lagos-main', 'Davis Okon'),
+  ('VSR-784', 'sulaimon@kea.com', 'Sulaimon', 'vsr', 'Lagos', 'lagos-main', 'Davis Okon'),
+  ('M0001', 'kenji@kea.com', 'Kenji Sato', 'merchandiser', 'Lagos', 'lagos-main', 'Davis Okon')
+ON CONFLICT (staff_code) DO NOTHING;
+
 INSERT INTO vsr_loan_status (vsr_id, locked)
 VALUES ('VSR-784', TRUE)
 ON CONFLICT (vsr_id) DO NOTHING;

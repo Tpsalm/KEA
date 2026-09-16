@@ -100,6 +100,86 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { status: 'ok' });
     }
 
+    if (url.pathname === '/api/attendance/today' && request.method === 'GET') {
+      const result = await pool.query('SELECT staff_code AS "staffCode", role, hub, clocked_in_at AS at FROM shift_clock_ins WHERE clocked_in_at::date = CURRENT_DATE ORDER BY clocked_in_at DESC');
+      return sendJson(response, 200, result.rows);
+    }
+
+    if (url.pathname === '/api/auth/clock-in' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.staffId || !body.passcode || !['supervisor', 'vsr', 'merchandiser'].includes(body.role)) {
+        return sendJson(response, 400, { error: 'Staff ID, passcode, and role are required' });
+      }
+      const staffResult = await pool.query('SELECT id, staff_code AS "staffCode", name, role, hub FROM staff WHERE (staff_code = $1 OR email = $1) AND role = $2 AND active = TRUE', [body.staffId, body.role]);
+      const staff = staffResult.rows[0];
+      if (!staff) return sendJson(response, 401, { error: 'Staff credentials or role are not authorized' });
+      const result = await pool.query('INSERT INTO shift_clock_ins (staff_id, staff_code, role, hub, latitude, longitude, accuracy_meters, telemetry_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING clocked_in_at AS at', [staff.id, staff.staffCode, staff.role, body.hub || staff.hub, body.latitude || null, body.longitude || null, body.accuracyMeters || null, body.telemetry || {}]);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['shift_clock_in', `${staff.staffCode} ${staff.role}`]);
+      return sendJson(response, 201, { staff, clockIn: result.rows[0], destination: `/${staff.role === 'vsr' ? 'vsr_field_terminal_mobile_sales_credit' : staff.role === 'merchandiser' ? 'merchandiser_hub_mobile_stock_expiry' : 'supervisor_operations_hub_mobile'}/code.html` });
+    }
+
+    if (url.pathname === '/api/supervisor/dashboard' && request.method === 'GET') {
+      const [staff, directives, actions] = await Promise.all([
+        pool.query('SELECT staff_code AS "staffCode", name, role, region, hub FROM staff WHERE active = TRUE ORDER BY role, name'),
+        pool.query('SELECT audience, message, created_at AS at FROM directives ORDER BY created_at DESC LIMIT 25'),
+        pool.query('SELECT action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at FROM stock_actions ORDER BY created_at DESC LIMIT 25')
+      ]);
+      return sendJson(response, 200, { staff: staff.rows, directives: directives.rows, stockActions: actions.rows });
+    }
+
+    const endorseMatch = url.pathname.match(/^\/api\/supervisor\/requisitions\/([^/]+)\/endorse$/);
+    if (endorseMatch && request.method === 'POST') {
+      const result = await pool.query('UPDATE requisitions SET endorsed_by = $1, endorsed_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING id, name, amount, status, endorsed_by AS "endorsedBy"', ['Davis Okon', endorseMatch[1]]);
+      if (!result.rowCount) return sendJson(response, 404, { error: 'Requisition not found' });
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['supervisor_endorsement', `${result.rows[0].id} by Davis Okon`]);
+      return sendJson(response, 200, result.rows[0]);
+    }
+
+    const freezeMatch = url.pathname.match(/^\/api\/supervisor\/loans\/([^/]+)\/freeze$/);
+    if (freezeMatch && request.method === 'POST') {
+      const name = decodeURIComponent(freezeMatch[1]);
+      await pool.query('INSERT INTO handheld_locks (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['supervisor_freeze', name]);
+      return sendJson(response, 200, { name, frozen: true });
+    }
+
+    if (url.pathname === '/api/supervisor/directives' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.audience || !body.message || !body.message.trim()) return sendJson(response, 400, { error: 'Audience and message are required' });
+      const result = await pool.query('INSERT INTO directives (sender_name, audience, message) VALUES ($1, $2, $3) RETURNING audience, message, created_at AS at', ['Davis Okon', body.audience, body.message.trim()]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/merchandiser/dashboard' && request.method === 'GET') {
+      const [audits, actions, checkins] = await Promise.all([
+        pool.query('SELECT store_name AS "storeName", sku, shelf_units AS "shelfUnits", intake_units AS "intakeUnits", batch_number AS "batchNumber", expiry_date AS "expiryDate", audited_at AS at FROM stock_audits WHERE staff_code = $1 ORDER BY audited_at DESC LIMIT 25', ['M0001']),
+        pool.query('SELECT action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at FROM stock_actions WHERE staff_code = $1 ORDER BY created_at DESC LIMIT 25', ['M0001']),
+        pool.query('SELECT store_name AS "storeName", latitude, longitude, radius_match AS "radiusMatch", checked_in_at AS at FROM store_checkins WHERE staff_code = $1 ORDER BY checked_in_at DESC LIMIT 1', ['M0001'])
+      ]);
+      return sendJson(response, 200, { audits: audits.rows, actions: actions.rows, latestCheckin: checkins.rows[0] || null });
+    }
+
+    if (url.pathname === '/api/merchandiser/store-checkins/reping' && request.method === 'POST') {
+      const body = await readBody(request);
+      const result = await pool.query('INSERT INTO store_checkins (staff_code, store_name, latitude, longitude, accuracy_meters) VALUES ($1, $2, $3, $4, $5) RETURNING store_name AS "storeName", latitude, longitude, accuracy_meters AS "accuracyMeters", radius_match AS "radiusMatch", checked_in_at AS at', ['M0001', body.storeName || 'Royal Prince Supermarket', body.latitude || null, body.longitude || null, body.accuracyMeters || null]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/merchandiser/stock-audits' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.storeName || !body.sku || !body.batchNumber || !body.expiryDate || Number(body.shelfUnits) < 0 || Number(body.intakeUnits) < 0) return sendJson(response, 400, { error: 'Complete stock audit fields are required' });
+      const result = await pool.query('INSERT INTO stock_audits (staff_code, store_name, sku, shelf_units, intake_units, batch_number, expiry_date, planogram_compliant) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, audited_at AS at', ['M0001', body.storeName, body.sku, Number(body.shelfUnits), Number(body.intakeUnits), body.batchNumber, body.expiryDate, Boolean(body.planogramCompliant)]);
+      await pool.query('INSERT INTO audit_log (action, detail) VALUES ($1, $2)', ['stock_audit', `${body.storeName} ${body.sku}`]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    if (url.pathname === '/api/merchandiser/stock-actions' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.actionType || !body.sku) return sendJson(response, 400, { error: 'Action type and SKU are required' });
+      const result = await pool.query('INSERT INTO stock_actions (staff_code, sku, batch_number, action_type, quantity, source_store, destination_store) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING action_type AS "actionType", sku, batch_number AS "batchNumber", created_at AS at', ['M0001', body.sku, body.batchNumber || null, body.actionType, body.quantity || null, body.sourceStore || null, body.destinationStore || null]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
     if (url.pathname === '/api/admin/dashboard' && request.method === 'GET') {
       return sendJson(response, 200, await getDashboard());
     }

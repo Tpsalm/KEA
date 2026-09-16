@@ -120,7 +120,7 @@
 <div class="font-body-sm text-body-sm text-on-surface-variant truncate">Plot 14 Olowora Express, Ikeja Zone</div>
 <div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5 font-medium">GPS: 6.6384° N, 3.3644° E (±3m accuracy)</div>
 </div>
-<button class="shrink-0 h-10 px-3 rounded-lg bg-surface-container-high text-on-surface hover:bg-surface-bright flex items-center gap-1.5 font-label-sm text-label-sm transition-transform active:scale-95" type="button">
+<button class="shrink-0 h-10 px-3 rounded-lg bg-surface-container-high text-on-surface hover:bg-surface-bright flex items-center gap-1.5 font-label-sm text-label-sm transition-transform active:scale-95" onclick="repingStore()" type="button">
 <span class="material-symbols-outlined text-[16px]">my_location</span>
         Re-ping
       </button>
@@ -190,7 +190,7 @@
 <span class="material-symbols-outlined text-primary text-[20px]">verified</span>
 <span class="font-body-sm text-body-sm text-on-surface">Shelf Planogram Compliant</span>
 </div>
-<input checked="" class="w-5 h-5 rounded accent-primary-container cursor-pointer" type="checkbox"/>
+<input checked="" class="w-5 h-5 rounded accent-primary-container cursor-pointer" id="planogramInput" type="checkbox"/>
 </div>
 <!-- Commit Action Button -->
 <button class="w-full h-12 rounded-xl bg-primary text-on-primary font-headline-sm text-headline-sm flex items-center justify-center gap-2 shadow-md hover:opacity-90 active:scale-[0.98] transition-all mt-1" id="commitBtn" type="submit">
@@ -438,29 +438,59 @@
     });
   });
 
-  function commitAudit() {
+  async function repingStore() {
+    const response = await fetch('/api/merchandiser/store-checkins/reping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeName: 'Royal Prince Supermarket', accuracyMeters: 3 })
+    });
+    if (!response.ok) return alert('Unable to persist GPS store check-in.');
+    alert('GPS store check-in synchronized.');
+  }
+
+  async function commitAudit() {
     const btn = document.getElementById('commitBtn');
     const toast = document.getElementById('syncFeedback');
     btn.disabled = true;
     btn.innerHTML = '<span class="material-symbols-outlined animate-spin text-[20px]">sync</span> Committing...';
 
-    setTimeout(() => {
+    try {
+      const response = await fetch('/api/merchandiser/stock-audits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeName: 'Royal Prince Supermarket',
+          sku: document.getElementById('skuSelect').value,
+          shelfUnits: Number(document.getElementById('shelfUnits').value),
+          intakeUnits: Number(document.getElementById('intakeUnits').value),
+          batchNumber: document.getElementById('batchNum').value.trim(),
+          expiryDate: document.getElementById('expDate').value,
+          planogramCompliant: document.getElementById('planogramInput').checked
+        })
+      });
+      if (!response.ok) throw new Error('Unable to sync stock audit.');
       btn.disabled = false;
       btn.innerHTML = '<span class="material-symbols-outlined text-[20px]">cloud_upload</span> Commit Audit &amp; Sync';
       toast.classList.remove('hidden');
-      setTimeout(() => {
+      window.setTimeout(() => {
         toast.classList.add('hidden');
       }, 4000);
-    }, 900);
+    } catch (error) {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[20px]">cloud_upload</span> Commit Audit &amp; Sync';
+      alert(error.message);
+    }
   }
 
-  function triggerClearance(sku, el) {
+  async function triggerClearance(sku, el) {
+    await fetch('/api/merchandiser/stock-actions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionType: 'clearance_tag', sku }) });
     el.innerHTML = '<span class="material-symbols-outlined text-[18px]">done</span> Tagged 25%';
     el.classList.remove('bg-secondary', 'text-on-secondary');
     el.classList.add('bg-primary-container', 'text-on-primary-container');
   }
 
-  function markReturn(sku, el) {
+  async function markReturn(sku, el) {
+    await fetch('/api/merchandiser/stock-actions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionType: 'return', sku }) });
     el.innerHTML = '<span class="material-symbols-outlined text-[18px]">local_shipping</span> Queued Return';
     el.classList.add('text-secondary');
   }
@@ -498,10 +528,13 @@
     });
   }
 
-  function sendWireMessage() {
+  async function sendWireMessage() {
     const input = document.getElementById('wireInput');
     const msg = input.value.trim();
     if (!msg) return;
+
+    const response = await fetch('/api/vsr/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) });
+    if (!response.ok) return alert('Unable to send message to Davis Okon.');
 
     const chat = document.getElementById('chatMessages');
     const now = new Date();

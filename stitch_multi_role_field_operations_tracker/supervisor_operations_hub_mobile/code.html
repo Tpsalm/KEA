@@ -373,9 +373,12 @@
     });
   });
 
-  function endorseReq(cardId) {
+  async function endorseReq(cardId) {
     const card = document.getElementById(cardId);
     if (!card) return;
+    const requisitionId = cardId === 'req-card-1' ? 'REQ-001' : 'REQ-002';
+    const response = await fetch(`/api/supervisor/requisitions/${requisitionId}/endorse`, { method: 'POST' });
+    if (!response.ok) return alert('Unable to route requisition to Super Admin.');
     
     card.classList.add('opacity-40', 'pointer-events-none');
     
@@ -407,11 +410,13 @@
     });
   }
 
-  function triggerEnforcement(name) {
+  async function triggerEnforcement(name) {
+    const response = await fetch(`/api/supervisor/loans/${encodeURIComponent(name)}/freeze`, { method: 'POST' });
+    if (!response.ok) return alert('Unable to transmit the account freeze.');
     alert('Security Alert: Credit restriction and account freeze transmitted for: ' + name);
   }
 
-  function broadcastDirective() {
+  async function broadcastDirective() {
     const msg = document.getElementById('directive-msg').value;
     const target = document.getElementById('directive-target');
     const targetName = target.options[target.selectedIndex].text;
@@ -420,6 +425,13 @@
       alert('Please enter a directive message to broadcast.');
       return;
     }
+
+    const response = await fetch('/api/supervisor/directives', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audience: target.value, message: msg })
+    });
+    if (!response.ok) return alert('Unable to transmit the directive.');
 
     const toast = document.createElement('div');
     toast.className = 'fixed top-20 left-1/2 -translate-x-1/2 bg-secondary text-on-secondary px-4 py-2.5 rounded-lg font-label-md text-label-md flex items-center gap-2 shadow-xl z-50';

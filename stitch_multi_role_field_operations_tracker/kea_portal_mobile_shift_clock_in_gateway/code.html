@@ -246,22 +246,29 @@
     }
   }
 
-  function triggerClockIn() {
+  async function triggerClockIn() {
     const btn = document.getElementById('submit-btn');
+    const payload = {
+      staffId: document.getElementById('staff-id').value.trim(),
+      passcode: document.getElementById('security-pin').value,
+      role: selectedRole,
+      hub: document.getElementById('regional-hub').value,
+      telemetry: { userAgent: navigator.userAgent, viewport: `${window.innerWidth}x${window.innerHeight}` }
+    };
     btn.innerHTML = '<span class="material-symbols-outlined animate-spin text-[24px]">sync</span><span>TRANSMITTING TELEMETRY...</span>';
     btn.classList.add('opacity-90');
-    setTimeout(() => {
+    try {
+      const response = await fetch('/api/auth/clock-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Clock-in failed');
       btn.innerHTML = '<span class="material-symbols-outlined text-[24px]">check_circle</span><span>SHIFT CLOCKED IN</span>';
       btn.classList.remove('bg-primary');
       btn.classList.add('bg-tertiary-container', 'text-on-tertiary');
-      setTimeout(() => {
-        const rolePaths = {
-          supervisor: '../supervisor_operations_hub_mobile/code.html',
-          vsr: '../vsr_field_terminal_mobile_sales_credit/code.html',
-          merchandiser: '../merchandiser_hub_mobile_stock_expiry/code.html'
-        };
-        window.location.href = rolePaths[selectedRole];
-      }, 3000);
-    }, 1200);
+      window.setTimeout(() => { window.location.href = result.destination; }, 1200);
+    } catch (error) {
+      btn.innerHTML = '<span class="material-symbols-outlined text-[24px]">fingerprint</span><span>SIGN IN &amp; CLOCK INTO SHIFT</span>';
+      btn.classList.remove('opacity-90');
+      alert(error.message);
+    }
   }
 </script></main><nav class="fixed bottom-0 w-full z-50 pb-safe bg-surface-container-lowest/90 backdrop-blur-xl shadow-[0_-1px_12px_rgba(0,0,0,0.35)]" data-active-classes="text-primary font-semibold"><div class="flex items-stretch justify-around h-20 px-space-xs"><a class="flex-1 min-w-[56px] min-h-[44px] py-1 flex flex-col items-center justify-center gap-1 text-on-surface-variant hover:text-on-surface transition-all active:scale-95" data-path="super-admin" href="#"><span class="material-symbols-outlined text-[22px]">shield_person</span><span class="font-label-sm text-label-sm tracking-tight text-center truncate w-full px-0.5">Admin</span></a><a class="flex-1 min-w-[56px] min-h-[44px] py-1 flex flex-col items-center justify-center gap-1 text-on-surface-variant hover:text-on-surface transition-all active:scale-95" data-path="supervisor" href="#"><span class="material-symbols-outlined text-[22px]">manage_accounts</span><span class="font-label-sm text-label-sm tracking-tight text-center truncate w-full px-0.5">Supervisor</span></a><a class="flex-1 min-w-[56px] min-h-[44px] py-1 flex flex-col items-center justify-center gap-1 text-on-surface-variant hover:text-on-surface transition-all active:scale-95" data-path="vsr-desk" href="#"><span class="material-symbols-outlined text-[22px]">desk</span><span class="font-label-sm text-label-sm tracking-tight text-center truncate w-full px-0.5">VSR Desk</span></a><a class="flex-1 min-w-[56px] min-h-[44px] py-1 flex flex-col items-center justify-center gap-1 text-on-surface-variant hover:text-on-surface transition-all active:scale-95" data-path="merchandiser" href="#"><span class="material-symbols-outlined text-[22px]">inventory_2</span><span class="font-label-sm text-label-sm tracking-tight text-center truncate w-full px-0.5">Merch</span></a><a aria-current="page" class="flex-1 min-w-[56px] min-h-[44px] py-1 flex flex-col items-center justify-center gap-1 transition-all active:scale-95 text-primary font-semibold" data-path="portal" href="#"><span class="material-symbols-outlined text-[22px]">hub</span><span class="font-label-sm text-label-sm tracking-tight text-center truncate w-full px-0.5">Portal</span></a></div></nav></body></html>
