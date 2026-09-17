@@ -2,7 +2,7 @@
   const script = document.currentScript;
   const asset = new URL('brand-logo.svg', new URL('.', script.src)).href;
   const style = document.createElement('style');
-  style.textContent = '.kea-brand-lockup{display:block;position:relative;z-index:10;width:min(210px,52vw);height:auto;margin:14px auto 12px;background:transparent;border:0;box-shadow:none;text-align:center}.kea-brand-lockup img{display:block;width:100%;height:auto;margin:0 auto}.kea-brand-lockup:focus-visible{outline:2px solid #acd63f;outline-offset:3px}@media (min-width:1024px){.kea-brand-lockup{width:min(240px,26vw);margin:18px auto 14px}}';
+  style.textContent = '.kea-brand-lockup{display:block;position:relative;z-index:10;width:min(210px,52vw);height:auto;margin:78px auto 12px;background:transparent;border:0;box-shadow:none;text-align:center}.kea-brand-lockup img{display:block;width:100%;height:auto;margin:0 auto}.kea-brand-lockup:focus-visible{outline:2px solid #acd63f;outline-offset:3px}@media (min-width:1024px){.kea-brand-lockup{width:min(240px,26vw);margin:82px auto 14px}}';
   document.head.appendChild(style);
   document.querySelectorAll('body *').forEach(element => {
     if (element.children.length !== 0) return;
