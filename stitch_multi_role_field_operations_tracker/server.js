@@ -66,6 +66,16 @@ function hasAccess(user, role) {
   return user && user.role === role;
 }
 
+const chatParticipants = {
+  'super_admin-supervisor': ['super_admin', 'supervisor'],
+  'supervisor-merchandiser': ['supervisor', 'merchandiser'],
+  'supervisor-vsr': ['supervisor', 'vsr']
+};
+
+function canUseChat(user, channel) {
+  return Boolean(user && chatParticipants[channel]?.includes(user.role));
+}
+
 function emitLiveSync(type, payload) {
   const message = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const client of liveClients) {
@@ -122,6 +132,9 @@ async function recordAudit(client, action, detail) {
 }
 
 function serveStatic(request, response, pathname, user) {
+  if (pathname === '/account.html' && !user) {
+    return response.writeHead(302, { Location: `/kea_portal_mobile_shift_clock_in_gateway/code.html?returnTo=${encodeURIComponent(pathname)}` }).end();
+  }
   const requiredRole = requiredRoleForPath(pathname);
   if (requiredRole && !hasAccess(user, requiredRole)) {
     if (user) return sendText(response, 403, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Access Not Allowed</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#081124;color:#e9f0ff;font:16px system-ui,sans-serif;text-align:center}main{max-width:420px;padding:32px}h1{color:#ffb693}a{color:#a6e358}</style></head><body><main><p>KEA OPERATIONS SECURITY</p><h1>Access not allowed</h1><p>Your ${user.role.replace('_', ' ')} account can only open its assigned workspace.</p><a href="/">Return to web directory</a></main></body></html>`, 'text/html; charset=utf-8');
@@ -178,6 +191,91 @@ const server = http.createServer(async (request, response) => {
 
     if (url.pathname === '/api/auth/me' && request.method === 'GET') return user ? sendJson(response, 200, { user }) : sendJson(response, 401, { error: 'Sign-in required' });
     if (url.pathname === '/api/auth/sign-out' && request.method === 'POST') { clearSession(request, response); return sendJson(response, 200, { ok: true }); }
+
+    const chatMatch = url.pathname.match(/^\/api\/chats\/([^/]+)$/);
+    if (chatMatch && ['GET', 'POST'].includes(request.method)) {
+      const channel = decodeURIComponent(chatMatch[1]);
+      if (!canUseChat(user, channel)) return sendJson(response, 403, { error: 'Private chat access is not allowed for this role' });
+      if (request.method === 'GET') {
+        const result = await pool.query('SELECT id, sender, sender_role AS "senderRole", recipient, message, attachment_name AS "attachmentName", attachment_type AS "attachmentType", created_at AS at FROM private_chat_messages WHERE channel = $1 ORDER BY created_at ASC LIMIT 100', [channel]);
+        return sendJson(response, 200, result.rows.map(item => ({ ...item, attachmentUrl: item.attachmentName ? `/api/chats/${encodeURIComponent(channel)}/attachments/${item.id}` : null })));
+      }
+      const body = await readBody(request);
+      const message = String(body.message || '').trim();
+      const attachment = body.attachment;
+      if (!message && !attachment?.dataUrl) return sendJson(response, 400, { error: 'Message or attachment is required' });
+      let attachmentData = null;
+      let attachmentName = null;
+      let attachmentType = null;
+      if (attachment?.dataUrl) {
+        const match = String(attachment.dataUrl).match(/^data:([^;]+);base64,(.+)$/);
+        if (!match || !attachment.name) return sendJson(response, 400, { error: 'Attachment is invalid' });
+        attachmentData = Buffer.from(match[2], 'base64');
+        if (attachmentData.length > 10 * 1024 * 1024) return sendJson(response, 413, { error: 'Attachment must be 10MB or smaller' });
+        attachmentName = attachment.name;
+        attachmentType = match[1];
+      }
+      const recipientRole = chatParticipants[channel].find(role => role !== user.role);
+      const recipient = recipientRole === 'super_admin' ? 'Super Admin' : recipientRole === 'supervisor' ? 'Davis Okon' : recipientRole === 'vsr' ? 'Sulaimon' : 'Kenji Sato';
+      const result = await pool.query('INSERT INTO private_chat_messages (channel, sender, sender_role, recipient, message, attachment_name, attachment_type, attachment_data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, sender, sender_role AS "senderRole", recipient, message, attachment_name AS "attachmentName", attachment_type AS "attachmentType", created_at AS at', [channel, user.name, user.role, recipient, message, attachmentName, attachmentType, attachmentData]);
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) VALUES ($1, $2, $3)', [recipient, 'New private chat message', message || `Attachment: ${attachmentName}`]);
+      const chatMessage = { ...result.rows[0], attachmentUrl: attachmentName ? `/api/chats/${encodeURIComponent(channel)}/attachments/${result.rows[0].id}` : null };
+      emitLiveSync('private-message', { channel, ...chatMessage });
+      return sendJson(response, 201, chatMessage);
+    }
+
+    const attachmentMatch = url.pathname.match(/^\/api\/chats\/([^/]+)\/attachments\/(\d+)$/);
+    if (attachmentMatch && request.method === 'GET') {
+      const channel = decodeURIComponent(attachmentMatch[1]);
+      if (!canUseChat(user, channel)) return sendJson(response, 403, { error: 'Private chat access is not allowed for this role' });
+      const result = await pool.query('SELECT attachment_name AS name, attachment_type AS type, attachment_data AS data FROM private_chat_messages WHERE channel = $1 AND id = $2', [channel, attachmentMatch[2]]);
+      if (!result.rowCount || !result.rows[0].data) return sendText(response, 404, 'Attachment not found', 'text/plain; charset=utf-8');
+      response.writeHead(200, { 'Content-Type': result.rows[0].type, 'Content-Disposition': `inline; filename="${result.rows[0].name.replace(/"/g, '')}"` });
+      return response.end(result.rows[0].data);
+    }
+
+    if (url.pathname === '/api/profile' && request.method === 'GET') {
+      if (!user) return sendJson(response, 401, { error: 'Sign-in required' });
+      const result = await pool.query('SELECT display_name AS "displayName", phone, avatar_type AS "avatarType", avatar_data IS NOT NULL AS "hasAvatar" FROM user_profiles WHERE login = $1', [user.login]);
+      return sendJson(response, 200, { user, profile: result.rows[0] || null });
+    }
+
+    if (url.pathname === '/api/profile' && request.method === 'POST') {
+      if (!user) return sendJson(response, 401, { error: 'Sign-in required' });
+      const body = await readBody(request);
+      let avatarData = null;
+      let avatarType = null;
+      if (body.avatar?.dataUrl) {
+        const match = String(body.avatar.dataUrl).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (!match) return sendJson(response, 400, { error: 'Profile image must be an image file' });
+        avatarData = Buffer.from(match[2], 'base64');
+        if (avatarData.length > 5 * 1024 * 1024) return sendJson(response, 413, { error: 'Profile image must be 5MB or smaller' });
+        avatarType = match[1];
+      }
+      await pool.query('INSERT INTO user_profiles (login, display_name, phone, avatar_type, avatar_data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (login) DO UPDATE SET display_name = COALESCE(EXCLUDED.display_name, user_profiles.display_name), phone = COALESCE(EXCLUDED.phone, user_profiles.phone), avatar_type = COALESCE(EXCLUDED.avatar_type, user_profiles.avatar_type), avatar_data = COALESCE(EXCLUDED.avatar_data, user_profiles.avatar_data), updated_at = NOW()', [user.login, body.displayName || null, body.phone || null, avatarType, avatarData]);
+      return sendJson(response, 200, { ok: true });
+    }
+
+    if (url.pathname === '/api/contact' && request.method === 'POST') {
+      if (!user) return sendJson(response, 401, { error: 'Sign-in required' });
+      const body = await readBody(request);
+      if (!body.subject || !body.message || !String(body.message).trim()) return sendJson(response, 400, { error: 'Subject and message are required' });
+      const result = await pool.query('INSERT INTO support_requests (sender_login, sender_name, subject, message) VALUES ($1, $2, $3, $4) RETURNING id, subject, message, status, created_at AS at', [user.login, user.name, String(body.subject).trim(), String(body.message).trim()]);
+      await pool.query('INSERT INTO user_notifications (recipient, title, message) VALUES ($1, $2, $3)', ['Super Admin', `Support request: ${result.rows[0].subject}`, `${user.name}: ${result.rows[0].message}`]);
+      emitLiveSync('support-request', { ...result.rows[0], sender: user.name });
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    const avatarMatch = url.pathname.match(/^\/api\/profile\/avatar\/([^/]+)$/);
+    if (avatarMatch && request.method === 'GET') {
+      if (!user) return sendJson(response, 401, { error: 'Sign-in required' });
+      const login = decodeURIComponent(avatarMatch[1]);
+      if (login !== user.login) return sendJson(response, 403, { error: 'Profile access is not allowed' });
+      const result = await pool.query('SELECT avatar_type AS type, avatar_data AS data FROM user_profiles WHERE login = $1', [login]);
+      if (!result.rowCount || !result.rows[0].data) return sendText(response, 404, 'Profile image not found', 'text/plain; charset=utf-8');
+      response.writeHead(200, { 'Content-Type': result.rows[0].type, 'Cache-Control': 'no-store' });
+      return response.end(result.rows[0].data);
+    }
 
     if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/') && !user) return sendJson(response, 401, { error: 'Sign-in required' });
     const requiredRole = requiredRoleForPath(url.pathname);

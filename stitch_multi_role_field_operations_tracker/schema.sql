@@ -103,6 +103,38 @@ CREATE TABLE IF NOT EXISTS user_notifications (
   read_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS private_chat_messages (
+  id BIGSERIAL PRIMARY KEY,
+  channel TEXT NOT NULL CHECK (channel IN ('super_admin-supervisor', 'supervisor-merchandiser', 'supervisor-vsr')),
+  sender TEXT NOT NULL,
+  sender_role TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  message TEXT NOT NULL DEFAULT '',
+  attachment_name TEXT,
+  attachment_type TEXT,
+  attachment_data BYTEA,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+  login TEXT PRIMARY KEY,
+  display_name TEXT,
+  phone TEXT,
+  avatar_type TEXT,
+  avatar_data BYTEA,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS support_requests (
+  id BIGSERIAL PRIMARY KEY,
+  sender_login TEXT NOT NULL,
+  sender_name TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS shift_clock_ins (
   id BIGSERIAL PRIMARY KEY,
   staff_id BIGINT REFERENCES staff(id),
