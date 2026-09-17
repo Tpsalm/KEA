@@ -261,6 +261,51 @@
     }));
   }
 
+  async function loadPeopleRoster() {
+    const region = document.getElementById('people-region')?.value || 'all';
+    const status = document.getElementById('people-status')?.value || 'all';
+    const people = await adminApi(`/api/admin/people?region=${encodeURIComponent(region)}&status=${encodeURIComponent(status)}`);
+    const counts = { funded: 0, unfunded: 0, prospective: 0, archived: 0 };
+    people.forEach(person => {
+      if (person.fundingStatus === 'funded') counts.funded += 1;
+      if (person.fundingStatus === 'unfunded' && person.employmentStatus !== 'archived') counts.unfunded += 1;
+      if (person.employmentStatus === 'prospective') counts.prospective += 1;
+      if (person.employmentStatus === 'archived') counts.archived += 1;
+    });
+    Object.entries(counts).forEach(([key, value]) => { const element = document.querySelector(`[data-people-count="${key}"]`); if (element) element.textContent = value; });
+    const roster = document.getElementById('people-roster');
+    if (!roster) return;
+    roster.replaceChildren(...people.map(person => {
+      const card = document.createElement('article');
+      card.className = 'bg-surface-container p-3 rounded-xl flex flex-col gap-2';
+      const statusLabel = person.employmentStatus === 'archived' ? 'Archived history' : person.employmentStatus === 'prospective' ? 'Prospective' : person.fundingStatus === 'funded' ? 'Funded' : 'Active / unfunded';
+      card.innerHTML = `<div class="flex items-start justify-between gap-3"><div class="min-w-0"><div class="font-headline-sm text-headline-sm text-on-surface truncate">${person.name}</div><div class="font-body-sm text-body-sm text-on-surface-variant truncate">${person.staffCode} · ${person.role} · ${person.region} · ${person.phone || 'No phone recorded'}</div></div><span class="font-label-sm text-label-sm text-primary bg-primary/10 rounded px-2 py-1 shrink-0">${statusLabel}</span></div><div class="grid grid-cols-2 gap-2"><select class="people-funding bg-surface-container-low text-on-surface rounded px-2 py-2 font-label-sm"><option value="funded">Funded</option><option value="unfunded">Unfunded</option><option value="not_applicable">N/A</option></select><select class="people-employment bg-surface-container-low text-on-surface rounded px-2 py-2 font-label-sm"><option value="active">Active staff</option><option value="prospective">Prospective</option><option value="archived">Archived</option></select></div><div class="flex items-center justify-between gap-2"><span class="font-label-sm text-label-sm text-on-surface-variant">${person.hub} · ${person.commentCount} comments</span><div class="flex gap-2"><button class="people-comment bg-surface-container-high text-on-surface rounded px-2 py-1 font-label-sm" type="button">Comment</button>${person.employmentStatus !== 'archived' ? '<button class="people-archive bg-secondary/20 text-secondary rounded px-2 py-1 font-label-sm" type="button">Archive</button>' : ''}</div></div><div class="people-comment-list flex flex-col gap-1"></div>`;
+      card.querySelector('.people-funding').value = person.fundingStatus;
+      card.querySelector('.people-employment').value = person.employmentStatus;
+      const updateStatus = async () => {
+        await adminApi(`/api/admin/people/${person.id}`, { method: 'POST', body: JSON.stringify({ fundingStatus: card.querySelector('.people-funding').value, employmentStatus: card.querySelector('.people-employment').value }) });
+        showAdminToast('Staff status updated and recorded', 'primary');
+        loadPeopleRoster();
+      };
+      card.querySelector('.people-funding').addEventListener('change', updateStatus);
+      card.querySelector('.people-employment').addEventListener('change', updateStatus);
+      card.querySelector('.people-comment')?.addEventListener('click', async () => {
+        const comment = window.prompt(`Comment for ${person.name}`);
+        if (!comment?.trim()) return;
+        await adminApi(`/api/admin/people/${person.id}/comments`, { method: 'POST', body: JSON.stringify({ comment }) });
+        showAdminToast('Comment saved to staff history', 'primary');
+        loadPeopleRoster();
+      });
+      card.querySelector('.people-archive')?.addEventListener('click', async () => {
+        if (!window.confirm(`Archive ${person.name} from the active roster? Their history will remain available.`)) return;
+        await adminApi(`/api/admin/people/${person.id}/archive`, { method: 'POST' });
+        showAdminToast(`${person.name} moved to archived history`, 'secondary');
+        loadPeopleRoster();
+      });
+      return card;
+    }));
+  }
+
   async function provisionUser(event) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -303,6 +348,10 @@
     updateAdminClock();
     loadAdminDashboard();
     loadProvisionedUsers().catch(() => showAdminToast('Credential roster unavailable', 'error'));
+    document.getElementById('people-region')?.addEventListener('change', () => loadPeopleRoster().catch(() => showAdminToast('People roster unavailable', 'error')));
+    document.getElementById('people-status')?.addEventListener('change', () => loadPeopleRoster().catch(() => showAdminToast('People roster unavailable', 'error')));
+    document.getElementById('export-people')?.addEventListener('click', () => { window.location.href = '/api/admin/people/export'; });
+    loadPeopleRoster().catch(() => showAdminToast('People roster unavailable: run the database migration first', 'error'));
     document.getElementById('provision-user-form')?.addEventListener('submit', provisionUser);
     window.setInterval(loadAdminDashboard, 10000);
     window.setInterval(updateAdminClock, 30000);
@@ -314,10 +363,30 @@
 <input class="w-full bg-surface-container-lowest text-on-surface rounded-lg p-3" name="name" placeholder="Full name" required>
 <input class="w-full bg-surface-container-lowest text-on-surface rounded-lg p-3" name="email" type="email" placeholder="Corporate email" required>
 <div class="grid grid-cols-2 gap-2"><select class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="role" required><option value="supervisor">Supervisor</option><option value="vsr">VSR</option><option value="merchandiser">Merchandiser</option></select><input class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="password" minlength="8" placeholder="Temporary password" required></div>
+<div class="grid grid-cols-2 gap-2"><input class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="region" placeholder="Region (e.g. Lagos)" required><input class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="phone" placeholder="Phone number"></div>
+<div class="grid grid-cols-2 gap-2"><select class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="employmentStatus"><option value="active">Active staff</option><option value="prospective">Prospective hire</option></select><select class="bg-surface-container-lowest text-on-surface rounded-lg p-3" name="fundingStatus"><option value="unfunded">Unfunded</option><option value="funded">Funded</option><option value="not_applicable">N/A</option></select></div>
 <button class="w-full bg-primary text-on-primary rounded-lg p-3 font-semibold" type="submit">Create login credentials</button>
 <p class="font-body-sm text-body-sm text-secondary break-words" id="credential-result">New credentials will appear here once issued.</p>
 </form>
 <div class="flex flex-col gap-2" id="provisioned-users"></div>
+</section>
+<!-- People Operations: funding, lifecycle, and regional roster -->
+<section class="flex flex-col gap-3" id="people-operations">
+<div class="flex items-center justify-between gap-3 px-1">
+<div><h2 class="font-headline-sm text-headline-sm text-on-surface">People Operations</h2><p class="font-body-sm text-body-sm text-on-surface-variant mt-1">Funding status, prospective hires, active staff, and archived history.</p></div>
+<button class="min-h-[44px] px-3 py-2 bg-primary text-on-primary rounded-lg font-label-md text-label-md flex items-center gap-1.5" id="export-people" type="button"><span class="material-symbols-outlined text-[18px]">download</span>Export</button>
+</div>
+<div class="grid grid-cols-2 gap-2.5" id="people-summary">
+<div class="bg-surface-container-low p-3 rounded-xl"><div class="font-label-sm text-label-sm text-on-surface-variant uppercase">Funded</div><div class="font-headline-lg text-headline-lg text-primary mt-2" data-people-count="funded">0</div></div>
+<div class="bg-surface-container-low p-3 rounded-xl"><div class="font-label-sm text-label-sm text-on-surface-variant uppercase">Unfunded staff</div><div class="font-headline-lg text-headline-lg text-secondary mt-2" data-people-count="unfunded">0</div></div>
+<div class="bg-surface-container-low p-3 rounded-xl"><div class="font-label-sm text-label-sm text-on-surface-variant uppercase">Prospective</div><div class="font-headline-lg text-headline-lg text-tertiary mt-2" data-people-count="prospective">0</div></div>
+<div class="bg-surface-container-low p-3 rounded-xl"><div class="font-label-sm text-label-sm text-on-surface-variant uppercase">Archived</div><div class="font-headline-lg text-headline-lg text-on-surface-variant mt-2" data-people-count="archived">0</div></div>
+</div>
+<div class="grid grid-cols-2 gap-2">
+<select class="bg-surface-container-low text-on-surface px-3 py-2.5 rounded-lg font-body-sm" id="people-region"><option value="all">All regions</option><option>Lagos</option><option>Ibadan</option><option>Ogun</option><option>Benin</option><option>Abuja</option></select>
+<select class="bg-surface-container-low text-on-surface px-3 py-2.5 rounded-lg font-body-sm" id="people-status"><option value="all">All lifecycle stages</option><option value="active">Active staff</option><option value="prospective">Prospective</option><option value="archived">Archived history</option></select>
+</div>
+<div class="flex flex-col gap-2" id="people-roster"><div class="bg-surface-container p-3 rounded-xl text-on-surface-variant font-body-sm">Loading people roster...</div></div>
 </section>
 <!-- 3. Action Center: Endorsement Approvals -->
 <section class="flex flex-col gap-3">

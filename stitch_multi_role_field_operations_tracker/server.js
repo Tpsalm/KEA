@@ -97,6 +97,10 @@ function sendText(response, status, payload, contentType) {
   response.end(payload);
 }
 
+function csvCell(value) {
+  return `"${String(value ?? '').replaceAll('"', '""')}"`;
+}
+
 function readBody(request) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -312,11 +316,12 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/api/admin/users' && request.method === 'POST') {
       const body = await readBody(request);
       if (!body.name || !body.email || !body.password || !['supervisor', 'vsr', 'merchandiser'].includes(body.role)) return sendJson(response, 400, { error: 'Name, email, role, and password are required' });
+      if (!['funded', 'unfunded', 'not_applicable'].includes(body.fundingStatus || 'unfunded') || !['active', 'prospective'].includes(body.employmentStatus || 'active')) return sendJson(response, 400, { error: 'Invalid staff funding or employment status' });
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
         const staffCode = body.staffCode || `${body.role.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-6)}`;
-        const staffResult = await client.query('INSERT INTO staff (staff_code, email, name, role, region, hub, supervisor_name, phone) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, staff_code AS "staffCode", email, name, role, hub, phone', [staffCode, body.email.trim(), body.name.trim(), body.role, body.region || 'Lagos', body.hub || 'lagos-main', body.supervisorName || 'Davis Okon', body.phone || null]);
+        const staffResult = await client.query('INSERT INTO staff (staff_code, email, name, role, region, hub, supervisor_name, phone, funding_status, employment_status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, staff_code AS "staffCode", email, name, role, hub, phone, funding_status AS "fundingStatus", employment_status AS "employmentStatus"', [staffCode, body.email.trim(), body.name.trim(), body.role, body.region || 'Lagos', body.hub || 'lagos-main', body.supervisorName || 'Davis Okon', body.phone || null, body.fundingStatus || 'unfunded', body.employmentStatus || 'active']);
         const salt = crypto.randomBytes(16).toString('hex');
         await client.query('INSERT INTO auth_users (staff_id, login, password_salt, password_hash, role) VALUES ($1, $2, $3, $4, $5)', [staffResult.rows[0].id, body.email.trim(), salt, hashPassword(body.password, salt), body.role]);
         await client.query('COMMIT');
@@ -512,6 +517,62 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/api/admin/audit-log' && request.method === 'GET') {
       const result = await pool.query('SELECT action, detail, created_at AS at FROM audit_log ORDER BY created_at DESC LIMIT 50');
       return sendJson(response, 200, result.rows);
+    }
+
+    if (url.pathname === '/api/admin/people' && request.method === 'GET') {
+      const filters = [];
+      const values = [];
+      for (const [key, column] of [['region', 's.region'], ['role', 's.role'], ['status', 's.employment_status'], ['funding', 's.funding_status']]) {
+        const value = url.searchParams.get(key);
+        if (value && value !== 'all') { values.push(value); filters.push(`${column} = $${values.length}`); }
+      }
+      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+      const result = await pool.query(`SELECT s.id, s.staff_code AS "staffCode", s.name, s.email, s.phone, s.role, s.region, s.hub, s.funding_status AS "fundingStatus", s.employment_status AS "employmentStatus", s.start_date AS "startDate", s.disengaged_at AS "disengagedAt", (SELECT COUNT(*) FROM staff_comments c WHERE c.staff_id = s.id) AS "commentCount" FROM staff s ${where} ORDER BY s.employment_status, s.region, s.name`, values);
+      return sendJson(response, 200, result.rows);
+    }
+
+    if (url.pathname === '/api/admin/people/export' && request.method === 'GET') {
+      const result = await pool.query('SELECT staff_code AS "Staff Code", name AS "Name", role AS "Role", region AS "Region", hub AS "Hub", phone AS "Phone", funding_status AS "Funding", employment_status AS "Status", start_date AS "Start Date" FROM staff ORDER BY region, name');
+      const headers = Object.keys(result.rows[0] || { 'Staff Code': '', Name: '', Role: '', Region: '', Hub: '', Phone: '', Funding: '', Status: '', 'Start Date': '' });
+      const csv = [headers, ...result.rows.map(row => headers.map(header => row[header]))].map(row => row.map(csvCell).join(',')).join('\n');
+      response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="kea-staff-roster.csv"' });
+      return response.end(csv);
+    }
+
+    const personMatch = url.pathname.match(/^\/api\/admin\/people\/(\d+)$/);
+    if (personMatch && request.method === 'POST') {
+      const body = await readBody(request);
+      const allowedFunding = ['funded', 'unfunded', 'not_applicable'];
+      const allowedStatus = ['active', 'prospective', 'archived'];
+      if (!allowedFunding.includes(body.fundingStatus) || !allowedStatus.includes(body.employmentStatus)) return sendJson(response, 400, { error: 'Invalid funding or employment status' });
+      const result = await pool.query('UPDATE staff SET funding_status = $1, employment_status = $2, active = $2 <> \'archived\', disengaged_at = CASE WHEN $2 = \'archived\' THEN COALESCE(disengaged_at, NOW()) ELSE NULL END WHERE id = $3 RETURNING id, staff_code AS "staffCode", funding_status AS "fundingStatus", employment_status AS "employmentStatus"', [body.fundingStatus, body.employmentStatus, personMatch[1]]);
+      if (!result.rowCount) return sendJson(response, 404, { error: 'Staff member not found' });
+      await pool.query('INSERT INTO staff_history (staff_id, action, detail) VALUES ($1, $2, $3)', [personMatch[1], 'status_updated', `${body.fundingStatus} / ${body.employmentStatus} by ${user.name}`]);
+      emitLiveSync('staff-updated', result.rows[0]);
+      return sendJson(response, 200, result.rows[0]);
+    }
+
+    const personCommentMatch = url.pathname.match(/^\/api\/admin\/people\/(\d+)\/comments$/);
+    if (personCommentMatch && request.method === 'GET') {
+      const result = await pool.query('SELECT author, comment, created_at AS at FROM staff_comments WHERE staff_id = $1 ORDER BY created_at DESC', [personCommentMatch[1]]);
+      return sendJson(response, 200, result.rows);
+    }
+
+    if (personCommentMatch && request.method === 'POST') {
+      const body = await readBody(request);
+      if (!body.comment || !String(body.comment).trim()) return sendJson(response, 400, { error: 'Comment is required' });
+      const result = await pool.query('INSERT INTO staff_comments (staff_id, author, comment) VALUES ($1, $2, $3) RETURNING author, comment, created_at AS at', [personCommentMatch[1], user.name, String(body.comment).trim()]);
+      await pool.query('INSERT INTO staff_history (staff_id, action, detail) VALUES ($1, $2, $3)', [personCommentMatch[1], 'comment_added', result.rows[0].comment]);
+      return sendJson(response, 201, result.rows[0]);
+    }
+
+    const personArchiveMatch = url.pathname.match(/^\/api\/admin\/people\/(\d+)\/archive$/);
+    if (personArchiveMatch && request.method === 'POST') {
+      const result = await pool.query("UPDATE staff SET active = FALSE, employment_status = 'archived', disengaged_at = NOW() WHERE id = $1 RETURNING id, staff_code AS \"staffCode\", name, employment_status AS \"employmentStatus\"", [personArchiveMatch[1]]);
+      if (!result.rowCount) return sendJson(response, 404, { error: 'Staff member not found' });
+      await pool.query('INSERT INTO staff_history (staff_id, action, detail) VALUES ($1, $2, $3)', [personArchiveMatch[1], 'archived', `Archived by ${user.name}`]);
+      emitLiveSync('staff-archived', result.rows[0]);
+      return sendJson(response, 200, result.rows[0]);
     }
 
     if (url.pathname === '/api/vsr/dashboard' && request.method === 'GET') {

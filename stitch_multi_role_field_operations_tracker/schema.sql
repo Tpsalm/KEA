@@ -69,6 +69,27 @@ CREATE TABLE IF NOT EXISTS staff (
   active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS funding_status TEXT NOT NULL DEFAULT 'unfunded' CHECK (funding_status IN ('funded', 'unfunded', 'not_applicable'));
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS employment_status TEXT NOT NULL DEFAULT 'active' CHECK (employment_status IN ('active', 'prospective', 'archived'));
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS disengaged_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS staff_history (
+  id BIGSERIAL PRIMARY KEY,
+  staff_id BIGINT NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS staff_comments (
+  id BIGSERIAL PRIMARY KEY,
+  staff_id BIGINT NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+  author TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS auth_users (
   id BIGSERIAL PRIMARY KEY,
   staff_id BIGINT REFERENCES staff(id) ON DELETE CASCADE,
